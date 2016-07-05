@@ -40,20 +40,7 @@ enum packet_len_status {
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
-	/** The current sampling limit (in number of samples). */
-	uint64_t limit_samples;
-
-	/** The current sampling limit (in ms). */
-	uint64_t limit_msec;
-
-	/** Opaque pointer passed in by the frontend. */
-	void *cb_data;
-
-	/** The current number of already received samples. */
-	uint64_t num_samples;
-
-	/** Start time of acquisition session */
-	int64_t starttime;
+	struct sr_sw_limits sw_limits;
 
 	uint8_t buf[DMM_BUFSIZE];
 	int bufoffset;
@@ -77,7 +64,7 @@ SR_PRIV int brymen_packet_length(const uint8_t *buf, int *len);
 SR_PRIV gboolean brymen_packet_is_valid(const uint8_t *buf);
 
 SR_PRIV int brymen_parse(const uint8_t *buf, float *floatval,
-		struct sr_datafeed_analog_old *analog, void *info);
+		struct sr_datafeed_analog *analog, void *info);
 
 SR_PRIV int brymen_stream_detect(struct sr_serial_dev_inst *serial,
 				 uint8_t *buf, size_t *buflen,

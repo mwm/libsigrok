@@ -33,17 +33,8 @@ enum {
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
-	/** The current sampling limit (in number of samples). */
-	uint64_t limit_samples;
+	struct sr_sw_limits limits;
 
-	/** The current sampling limit (in ms). */
-	uint64_t limit_msec;
-
-	/** Opaque pointer passed in by the frontend. */
-	void *cb_data;
-
-	/** The current number of already received samples. */
-	uint64_t num_samples;
 	int state;
 	char buf[10];
 	int buflen;

@@ -33,13 +33,6 @@ static const uint32_t devopts[] = {
 	SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
 };
 
-SR_PRIV struct sr_dev_driver brymen_bm86x_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	GSList *usb_devices, *devices, *l;
@@ -51,7 +44,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	const char *conn;
 
 	drvc = di->context;
-	drvc->instances = NULL;
 
 	conn = BRYMEN_BC86X;
 	for (l = options; l; l = l->next) {
@@ -78,23 +70,18 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->model = g_strdup("BM869");
 		devc = g_malloc0(sizeof(struct dev_context));
 		sdi->priv = devc;
-		sdi->driver = di;
 		sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
 		sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P2");
 
 		sdi->inst_type = SR_INST_USB;
 		sdi->conn = usb;
 
-		drvc->instances = g_slist_append(drvc->instances, sdi);
+		sr_sw_limits_init(&devc->sw_limits);
+
 		devices = g_slist_append(devices, sdi);
 	}
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -172,11 +159,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return ret;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -184,18 +166,7 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 
 	(void)cg;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		*data = g_variant_new_uint64(devc->limit_samples);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		*data = g_variant_new_uint64(devc->limit_msec);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_get(&devc->sw_limits, key, data);
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -208,23 +179,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->sw_limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -249,21 +206,18 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-				    void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
 	devc = sdi->priv;
-	devc->start_time = g_get_monotonic_time();
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->sw_limits);
+
+	std_session_send_df_header(sdi);
 
 	sr_session_source_add(sdi->session, -1, 0, 10,
 			brymen_bm86x_receive_data, (void *)sdi);
@@ -271,32 +225,26 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	/* Send end packet to the session bus. */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	sr_session_source_remove(sdi->session, -1);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver brymen_bm86x_driver_info = {
+static struct sr_dev_driver brymen_bm86x_driver_info = {
 	.name = "brymen-bm86x",
 	.longname = "Brymen BM86X",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -307,3 +255,4 @@ SR_PRIV struct sr_dev_driver brymen_bm86x_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(brymen_bm86x_driver_info);

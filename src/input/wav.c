@@ -37,7 +37,7 @@
 #define MIN_DATA_CHUNK_OFFSET    45
 
 /* Expect to find the "data" chunk within this offset from the start. */
-#define MAX_DATA_CHUNK_OFFSET    256
+#define MAX_DATA_CHUNK_OFFSET    1024
 
 #define WAVE_FORMAT_PCM_         0x0001
 #define WAVE_FORMAT_IEEE_FLOAT_  0x0003
@@ -175,16 +175,21 @@ static int find_data_chunk(GString *buf, int initial_offset)
 		offset += 8 + RL32(buf->str + offset + 4);
 	}
 
+	if (offset > MAX_DATA_CHUNK_OFFSET)
+		return -1;
+
 	return offset;
 }
 
 static void send_chunk(const struct sr_input *in, int offset, int num_samples)
 {
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct context *inc;
 	float fdata[CHUNK_SIZE];
-	uint64_t sample;
 	int total_samples, samplenum;
 	char *s, *d;
 
@@ -196,18 +201,16 @@ static void send_chunk(const struct sr_input *in, int offset, int num_samples)
 	total_samples = num_samples * inc->num_channels;
 	for (samplenum = 0; samplenum < total_samples; samplenum++) {
 		if (inc->fmt_code == WAVE_FORMAT_PCM_) {
-			sample = 0;
-			memcpy(&sample, s, inc->unitsize);
-			switch (inc->samplesize) {
+			switch (inc->unitsize) {
 			case 1:
 				/* 8-bit PCM samples are unsigned. */
-				fdata[samplenum] = (uint8_t)sample / (float)255;
+				fdata[samplenum] = *(uint8_t*)(s) / (float)255;
 				break;
 			case 2:
-				fdata[samplenum] = RL16S(&sample) / (float)INT16_MAX;
+				fdata[samplenum] = RL16S(s) / (float)INT16_MAX;
 				break;
 			case 4:
-				fdata[samplenum] = RL32S(&sample) / (float)INT32_MAX;
+				fdata[samplenum] = RL32S(s) / (float)INT32_MAX;
 				break;
 			}
 		} else {
@@ -223,14 +226,16 @@ static void send_chunk(const struct sr_input *in, int offset, int num_samples)
 		s += inc->unitsize;
 		d += inc->unitsize;
 	}
-	packet.type = SR_DF_ANALOG_OLD;
+
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	analog.channels = in->sdi->channels;
 	analog.num_samples = num_samples;
-	analog.mq = 0;
-	analog.mqflags = 0;
-	analog.unit = 0;
 	analog.data = fdata;
+	analog.meaning->channels = in->sdi->channels;
+	analog.meaning->mq = 0;
+	analog.meaning->mqflags = 0;
+	analog.meaning->unit = 0;
 	sr_session_send(in->sdi, &packet);
 }
 
@@ -242,22 +247,17 @@ static int process_buffer(struct sr_input *in)
 	struct sr_config *src;
 	int offset, chunk_samples, total_samples, processed, max_chunk_samples;
 	int num_samples, i;
-	char channelname[8];
 
 	inc = in->priv;
 	if (!inc->started) {
-		for (i = 0; i < inc->num_channels; i++) {
-			snprintf(channelname, 8, "CH%d", i + 1);
-			sr_channel_new(in->sdi, i, SR_CHANNEL_ANALOG, TRUE, channelname);
-		}
-
-		std_session_send_df_header(in->sdi, LOG_PREFIX);
+		std_session_send_df_header(in->sdi);
 
 		packet.type = SR_DF_META;
 		packet.payload = &meta;
 		src = sr_config_new(SR_CONF_SAMPLERATE, g_variant_new_uint64(inc->samplerate));
 		meta.config = g_slist_append(NULL, src);
 		sr_session_send(in->sdi, &packet);
+		g_slist_free(meta.config);
 		sr_config_free(src);
 
 		inc->started = TRUE;
@@ -278,8 +278,8 @@ static int process_buffer(struct sr_input *in)
 		offset = 0;
 
 	/* Round off up to the last channels * unitsize boundary. */
-	chunk_samples = (in->buf->len - offset) / inc->num_channels / inc->unitsize;
-	max_chunk_samples = CHUNK_SIZE / inc->num_channels / inc->unitsize;
+	chunk_samples = (in->buf->len - offset) / inc->samplesize;
+	max_chunk_samples = CHUNK_SIZE / inc->samplesize;
 	processed = 0;
 	total_samples = chunk_samples;
 	while (processed < total_samples) {
@@ -288,7 +288,7 @@ static int process_buffer(struct sr_input *in)
 		else
 			num_samples = chunk_samples;
 		send_chunk(in, offset, num_samples);
-		offset += num_samples * inc->unitsize;
+		offset += num_samples * inc->samplesize;
 		chunk_samples -= num_samples;
 		processed += num_samples;
 	}
@@ -309,6 +309,7 @@ static int receive(struct sr_input *in, GString *buf)
 {
 	struct context *inc;
 	int ret;
+	char channelname[8];
 
 	g_string_append_len(in->buf, buf->str, buf->len);
 
@@ -328,6 +329,11 @@ static int receive(struct sr_input *in, GString *buf)
 		else if (ret != SR_OK)
 			return ret;
 
+		for (int i = 0; i < inc->num_channels; i++) {
+			snprintf(channelname, 8, "CH%d", i + 1);
+			sr_channel_new(in->sdi, i, SR_CHANNEL_ANALOG, TRUE, channelname);
+		}
+
 		/* sdi is ready, notify frontend. */
 		in->sdi_ready = TRUE;
 		return SR_OK;
@@ -340,7 +346,6 @@ static int receive(struct sr_input *in, GString *buf)
 
 static int end(struct sr_input *in)
 {
-	struct sr_datafeed_packet packet;
 	struct context *inc;
 	int ret;
 
@@ -350,12 +355,20 @@ static int end(struct sr_input *in)
 		ret = SR_OK;
 
 	inc = in->priv;
-	if (inc->started) {
-		packet.type = SR_DF_END;
-		sr_session_send(in->sdi, &packet);
-	}
+	if (inc->started)
+		std_session_send_df_end(in->sdi);
 
 	return ret;
+}
+
+static int reset(struct sr_input *in)
+{
+	struct context *inc = in->priv;
+
+	inc->started = FALSE;
+	g_string_truncate(in->buf, 0);
+
+	return SR_OK;
 }
 
 SR_PRIV struct sr_input_module input_wav = {
@@ -368,4 +381,5 @@ SR_PRIV struct sr_input_module input_wav = {
 	.init = init,
 	.receive = receive,
 	.end = end,
+	.reset = reset,
 };

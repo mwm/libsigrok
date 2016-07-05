@@ -27,7 +27,7 @@
 #include "libsigrok-internal.h"
 #include "protocol.h"
 
-extern struct sr_dev_driver lascar_el_usb_driver_info;
+extern SR_PRIV struct sr_dev_driver lascar_el_usb_driver_info;
 struct sr_dev_driver *di = &lascar_el_usb_driver_info;
 
 static const struct elusb_profile profiles[] = {
@@ -52,7 +52,7 @@ static const struct elusb_profile profiles[] = {
 	{ 19, "EL-USB-1-LCD", LOG_UNSUPPORTED },
 	{ 20, "EL-OEM-3", LOG_UNSUPPORTED },
 	{ 21, "EL-USB-1-LCD", LOG_UNSUPPORTED },
-	{ 0, NULL, 0 }
+	ALL_ZERO
 };
 
 static libusb_device_handle *lascar_open(struct libusb_device *dev)
@@ -327,7 +327,6 @@ static struct sr_dev_inst *lascar_identify(unsigned char *config)
 		sdi->vendor = g_strdup(LASCAR_VENDOR);
 		sdi->model = g_strdup(profile->modelname);
 		sdi->version = g_strdup(firmware);
-		sdi->driver = di;
 
 		if (profile->logformat == LOG_TEMP_RH) {
 			/* Model this as two channels: temperature and humidity. */
@@ -354,12 +353,16 @@ SR_PRIV struct sr_dev_inst *lascar_scan(int bus, int address)
 	struct libusb_device **devlist;
 	libusb_device_handle *dev_hdl;
 	int dummy, i;
+	int ret;
 	unsigned char config[MAX_CONFIGBLOCK_SIZE];
 
 	drvc = di->context;
 	sdi = NULL;
 
-	libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
+	ret = libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
+	if (ret < 0)
+		return NULL;
+
 	for (i = 0; devlist[i]; i++) {
 		if (libusb_get_bus_number(devlist[i]) != bus ||
 				libusb_get_device_address(devlist[i]) != address)
@@ -374,6 +377,7 @@ SR_PRIV struct sr_dev_inst *lascar_scan(int bus, int address)
 		libusb_close(dev_hdl);
 		sdi = lascar_identify(config);
 	}
+	libusb_free_device_list(devlist, 1);
 
 	return sdi;
 }
@@ -383,7 +387,10 @@ static void lascar_el_usb_dispatch(struct sr_dev_inst *sdi, unsigned char *buf,
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_channel *ch;
 	float *temp, *rh;
 	uint16_t s;
@@ -391,15 +398,17 @@ static void lascar_el_usb_dispatch(struct sr_dev_inst *sdi, unsigned char *buf,
 
 	devc = sdi->priv;
 
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+
 	samples = buflen / devc->sample_size;
 	samples_left = devc->logged_samples - devc->rcvd_samples;
 	if (samples_left < samples)
 		samples = samples_left;
 	switch (devc->profile->logformat) {
 	case LOG_TEMP_RH:
-		packet.type = SR_DF_ANALOG_OLD;
+		packet.type = SR_DF_ANALOG;
 		packet.payload = &analog;
-		analog.mqflags = 0;
+		analog.meaning->mqflags = 0;
 		if (!(temp = g_try_malloc(sizeof(float) * samples)))
 			break;
 		if (!(rh = g_try_malloc(sizeof(float) * samples)))
@@ -423,47 +432,47 @@ static void lascar_el_usb_dispatch(struct sr_dev_inst *sdi, unsigned char *buf,
 
 		ch = sdi->channels->data;
 		if (ch->enabled) {
-			analog.channels = g_slist_append(NULL, ch);
-			analog.mq = SR_MQ_TEMPERATURE;
+			analog.meaning->channels = g_slist_append(NULL, ch);
+			analog.meaning->mq = SR_MQ_TEMPERATURE;
 			if (devc->temp_unit == 1)
-				analog.unit = SR_UNIT_FAHRENHEIT;
+				analog.meaning->unit = SR_UNIT_FAHRENHEIT;
 			else
-				analog.unit = SR_UNIT_CELSIUS;
-			analog.data = temp;
-			sr_session_send(devc->cb_data, &packet);
-			g_slist_free(analog.channels);
+				analog.meaning->unit = SR_UNIT_CELSIUS;
+			analog.data = (void *)temp;
+			sr_session_send(sdi, &packet);
+			g_slist_free(analog.meaning->channels);
 		}
 
 		ch = sdi->channels->next->data;
 		if (ch->enabled) {
-			analog.channels = g_slist_append(NULL, ch);
-			analog.mq = SR_MQ_RELATIVE_HUMIDITY;
-			analog.unit = SR_UNIT_PERCENTAGE;
-			analog.data = rh;
-			sr_session_send(devc->cb_data, &packet);
-			g_slist_free(analog.channels);
+			analog.meaning->channels = g_slist_append(NULL, ch);
+			analog.meaning->mq = SR_MQ_RELATIVE_HUMIDITY;
+			analog.meaning->unit = SR_UNIT_PERCENTAGE;
+			analog.data = (void *)rh;
+			sr_session_send(sdi, &packet);
+			g_slist_free(analog.meaning->channels);
 		}
 
 		g_free(temp);
 		g_free(rh);
 		break;
 	case LOG_CO:
-		packet.type = SR_DF_ANALOG_OLD;
+		packet.type = SR_DF_ANALOG;
 		packet.payload = &analog;
-		analog.channels = sdi->channels;
+		analog.meaning->channels = sdi->channels;
 		analog.num_samples = samples;
-		analog.mq = SR_MQ_CARBON_MONOXIDE;
-		analog.unit = SR_UNIT_CONCENTRATION;
-		analog.mqflags = 0;
+		analog.meaning->mq = SR_MQ_CARBON_MONOXIDE;
+		analog.meaning->unit = SR_UNIT_CONCENTRATION;
+		analog.meaning->mqflags = 0;
 		if (!(analog.data = g_try_malloc(sizeof(float) * samples)))
 			break;
 		for (i = 0; i < samples; i++) {
 			s = (buf[i * 2] << 8) | buf[i * 2 + 1];
-			analog.data[i] = (s * devc->co_high + devc->co_low) / (1000 * 1000);
-			if (analog.data[i] < 0.0)
-				analog.data[i] = 0.0;
+			((float *)analog.data)[i] = (s * devc->co_high + devc->co_low) / (1000 * 1000);
+			if (((float *)analog.data)[i] < 0.0)
+				((float *)analog.data)[i] = 0.0;
 		}
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 		g_free(analog.data);
 		break;
 	default:
@@ -477,7 +486,6 @@ static void lascar_el_usb_dispatch(struct sr_dev_inst *sdi, unsigned char *buf,
 SR_PRIV int lascar_el_usb_handle_events(int fd, int revents, void *cb_data)
 {
 	struct drv_context *drvc = di->context;
-	struct sr_datafeed_packet packet;
 	struct sr_dev_inst *sdi;
 	struct timeval tv;
 
@@ -488,9 +496,7 @@ SR_PRIV int lascar_el_usb_handle_events(int fd, int revents, void *cb_data)
 
 	if (sdi->status == SR_ST_STOPPING) {
 		usb_source_remove(sdi->session, drvc->sr_ctx);
-
-		packet.type = SR_DF_END;
-		sr_session_send(cb_data, &packet);
+		std_session_send_df_end(sdi);
 	}
 
 	memset(&tv, 0, sizeof(struct timeval));
@@ -514,7 +520,7 @@ SR_PRIV void LIBUSB_CALL lascar_el_usb_receive_transfer(struct libusb_transfer *
 	switch (transfer->status) {
 	case LIBUSB_TRANSFER_NO_DEVICE:
 		/* USB device was unplugged. */
-		dev_acquisition_stop(sdi, sdi);
+		dev_acquisition_stop(sdi);
 		return;
 	case LIBUSB_TRANSFER_COMPLETED:
 	case LIBUSB_TRANSFER_TIMED_OUT: /* We may have received some data though */
@@ -533,7 +539,7 @@ SR_PRIV void LIBUSB_CALL lascar_el_usb_receive_transfer(struct libusb_transfer *
 				devc->rcvd_bytes, devc->log_size,
 				devc->rcvd_samples, devc->logged_samples);
 		if (devc->rcvd_bytes >= devc->log_size)
-			dev_acquisition_stop(sdi, sdi);
+			dev_acquisition_stop(sdi);
 	}
 
 	if (sdi->status == SR_ST_ACTIVE) {
@@ -543,7 +549,7 @@ SR_PRIV void LIBUSB_CALL lascar_el_usb_receive_transfer(struct libusb_transfer *
 			       libusb_error_name(ret));
 			g_free(transfer->buffer);
 			libusb_free_transfer(transfer);
-			dev_acquisition_stop(sdi, sdi);
+			dev_acquisition_stop(sdi);
 		}
 	} else {
 		/* This was the last transfer we're going to receive, so

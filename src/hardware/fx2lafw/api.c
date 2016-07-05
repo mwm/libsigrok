@@ -21,6 +21,7 @@
 #include <config.h>
 #include "protocol.h"
 #include "dslogic.h"
+#include <math.h>
 
 static const struct fx2lafw_profile supported_fx2[] = {
 	/*
@@ -30,7 +31,7 @@ static const struct fx2lafw_profile supported_fx2[] = {
 	 */
 	{ 0x08a9, 0x0014, "CWAV", "USBee AX", NULL,
 		"fx2lafw-cwav-usbeeax.fw",
-		0, NULL, NULL},
+		DEV_CAPS_AX_ANALOG, NULL, NULL},
 	/*
 	 * CWAV USBee DX
 	 * XZL-Studio DX
@@ -113,7 +114,7 @@ static const struct fx2lafw_profile supported_fx2[] = {
 		"fx2lafw-sigrok-fx2-16ch.fw",
 		DEV_CAPS_16BIT, NULL, NULL },
 
-	{ 0, 0, 0, 0, 0, 0, 0, 0, 0 }
+	ALL_ZERO
 };
 
 static const uint32_t drvopts[] = {
@@ -125,7 +126,7 @@ static const uint32_t scanopts[] = {
 };
 
 static const uint32_t devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_CONN | SR_CONF_GET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
@@ -133,9 +134,16 @@ static const uint32_t devopts[] = {
 	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
 };
 
-static const char *channel_names[] = {
-	"0", "1", "2", "3", "4", "5", "6", "7",
-	"8", "9", "10", "11", "12", "13", "14", "15",
+static const uint32_t dslogic_devopts[] = {
+	SR_CONF_CONTINUOUS | SR_CONF_SET | SR_CONF_GET,
+	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_VOLTAGE_THRESHOLD | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_CONN | SR_CONF_GET,
+	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
+	SR_CONF_CAPTURE_RATIO | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_EXTERNAL_CLOCK | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_CLOCK_EDGE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
 static const int32_t soft_trigger_matches[] = {
@@ -144,6 +152,21 @@ static const int32_t soft_trigger_matches[] = {
 	SR_TRIGGER_RISING,
 	SR_TRIGGER_FALLING,
 	SR_TRIGGER_EDGE,
+};
+
+/* Names assigned to available edge slope choices. */
+static const char *const signal_edge_names[] = {
+	[DS_EDGE_RISING] = "rising",
+	[DS_EDGE_FALLING] = "falling",
+};
+
+static const struct {
+	int range;
+	gdouble low;
+	gdouble high;
+} volt_thresholds[] = {
+	{ DS_VOLTAGE_RANGE_18_33_V, 0.7, 1.4 },
+	{ DS_VOLTAGE_RANGE_5_V, 1.4, 3.6 },
 };
 
 static const uint64_t samplerates[] = {
@@ -184,19 +207,14 @@ static const uint64_t dslogic_samplerates[] = {
 	SR_MHZ(400),
 };
 
-SR_PRIV struct sr_dev_driver fx2lafw_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
 	struct sr_usb_dev_inst *usb;
+	struct sr_channel *ch;
+	struct sr_channel_group *cg;
 	struct sr_config *src;
 	const struct fx2lafw_profile *prof;
 	GSList *l, *devices, *conn_devices;
@@ -204,9 +222,11 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	struct libusb_device_descriptor des;
 	libusb_device **devlist;
 	struct libusb_device_handle *hdl;
-	int num_logic_channels, ret, i, j;
+	int ret, i, j;
+	int num_logic_channels = 0, num_analog_channels = 0;
 	const char *conn;
 	char manufacturer[64], product[64], serial_num[64], connection_id[64];
+	char channel_name[16];
 
 	drvc = di->context;
 
@@ -303,21 +323,41 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->vendor = g_strdup(prof->vendor);
 		sdi->model = g_strdup(prof->model);
 		sdi->version = g_strdup(prof->model_version);
-		sdi->driver = di;
 		sdi->serial_num = g_strdup(serial_num);
 		sdi->connection_id = g_strdup(connection_id);
 
 		/* Fill in channellist according to this device's profile. */
 		num_logic_channels = prof->dev_caps & DEV_CAPS_16BIT ? 16 : 8;
-		for (j = 0; j < num_logic_channels; j++)
-			sr_channel_new(sdi, j, SR_CHANNEL_LOGIC, TRUE,
-					channel_names[j]);
+		num_analog_channels = prof->dev_caps & DEV_CAPS_AX_ANALOG ? 1 : 0;
+
+		/* Logic channels, all in one channel group. */
+		cg = g_malloc0(sizeof(struct sr_channel_group));
+		cg->name = g_strdup("Logic");
+		for (j = 0; j < num_logic_channels; j++) {
+			sprintf(channel_name, "D%d", j);
+			ch = sr_channel_new(sdi, j, SR_CHANNEL_LOGIC,
+						TRUE, channel_name);
+			cg->channels = g_slist_append(cg->channels, ch);
+		}
+		sdi->channel_groups = g_slist_append(NULL, cg);
+
+		for (j = 0; j < num_analog_channels; j++) {
+			snprintf(channel_name, 16, "A%d", j);
+			ch = sr_channel_new(sdi, j + num_logic_channels,
+					SR_CHANNEL_ANALOG, TRUE, channel_name);
+
+			/* Every analog channel gets its own channel group. */
+			cg = g_malloc0(sizeof(struct sr_channel_group));
+			cg->name = g_strdup(channel_name);
+			cg->channels = g_slist_append(NULL, ch);
+			sdi->channel_groups = g_slist_append(sdi->channel_groups, cg);
+		}
 
 		devc = fx2lafw_dev_new();
 		devc->profile = prof;
-		devc->sample_wide = (prof->dev_caps & DEV_CAPS_16BIT) != 0;
+		if ((prof->dev_caps & DEV_CAPS_16BIT) || (prof->dev_caps & DEV_CAPS_AX_ANALOG))
+			devc->sample_wide = TRUE;
 		sdi->priv = devc;
-		drvc->instances = g_slist_append(drvc->instances, sdi);
 		devices = g_slist_append(devices, sdi);
 
 		if (!strcmp(prof->model, "DSLogic")
@@ -361,12 +401,21 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	libusb_free_device_list(devlist, 1);
 	g_slist_free_full(conn_devices, (GDestroyNotify)sr_usb_dev_inst_free);
 
-	return devices;
+	return std_scan_complete(di, devices);
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
+static void clear_dev_context(void *priv)
 {
-	return ((struct drv_context *)(di->context))->instances;
+	struct dev_context *devc;
+
+	devc = priv;
+	g_slist_free(devc->enabled_analog_channels);
+	g_free(devc);
+}
+
+static int dev_clear(const struct sr_dev_driver *di)
+{
+	return std_dev_clear(di, clear_dev_context);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -436,18 +485,19 @@ static int dev_open(struct sr_dev_inst *sdi)
 
 	if (devc->dslogic) {
 		if (!strcmp(devc->profile->model, "DSLogic")) {
-			fpga_firmware = DSLOGIC_FPGA_FIRMWARE;
-		} else if (!strcmp(devc->profile->model, "DSLogic Pro")) {
+			if (devc->dslogic_voltage_threshold == DS_VOLTAGE_RANGE_18_33_V)
+				fpga_firmware = DSLOGIC_FPGA_FIRMWARE_3V3;
+			else
+				fpga_firmware = DSLOGIC_FPGA_FIRMWARE_5V;
+		} else if (!strcmp(devc->profile->model, "DSLogic Pro")){
 			fpga_firmware = DSLOGIC_PRO_FPGA_FIRMWARE;
 		} else if (!strcmp(devc->profile->model, "DSCope")) {
 			fpga_firmware = DSCOPE_FPGA_FIRMWARE;
 		}
 
-		if ((ret = dslogic_fpga_firmware_upload(sdi,
-				fpga_firmware)) != SR_OK)
+		if ((ret = dslogic_fpga_firmware_upload(sdi, fpga_firmware)) != SR_OK)
 			return ret;
 	}
-
 	if (devc->cur_samplerate == 0) {
 		/* Samplerate hasn't been set; default to the slowest one. */
 		devc->cur_samplerate = devc->samplerates[0];
@@ -461,6 +511,7 @@ static int dev_close(struct sr_dev_inst *sdi)
 	struct sr_usb_dev_inst *usb;
 
 	usb = sdi->conn;
+
 	if (!usb->devhdl)
 		return SR_ERR;
 
@@ -474,26 +525,13 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	int ret;
-	struct drv_context *drvc;
-
-	if (!(drvc = di->context))
-		return SR_OK;
-
-	ret = std_dev_clear(di, NULL);
-
-	g_free(drvc);
-
-	return ret;
-}
-
-static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
-		const struct sr_channel_group *cg)
+static int config_get(uint32_t key, GVariant **data,
+	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
+	GVariant *range[2];
+	unsigned int i;
 	char str[128];
 
 	(void)cg;
@@ -515,6 +553,16 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		snprintf(str, 128, "%d.%d", usb->bus, usb->address);
 		*data = g_variant_new_string(str);
 		break;
+	case SR_CONF_VOLTAGE_THRESHOLD:
+		for (i = 0; i < ARRAY_SIZE(volt_thresholds); i++) {
+			if (volt_thresholds[i].range != devc->dslogic_voltage_threshold)
+				continue;
+			range[0] = g_variant_new_double(volt_thresholds[i].low);
+			range[1] = g_variant_new_double(volt_thresholds[i].high);
+			*data = g_variant_new_tuple(range, 2);
+			break;
+		}
+		break;
 	case SR_CONF_LIMIT_SAMPLES:
 		*data = g_variant_new_uint64(devc->limit_samples);
 		break;
@@ -524,6 +572,18 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 	case SR_CONF_CAPTURE_RATIO:
 		*data = g_variant_new_uint64(devc->capture_ratio);
 		break;
+	case SR_CONF_EXTERNAL_CLOCK:
+		*data = g_variant_new_boolean(devc->dslogic_external_clock);
+		break;
+	case SR_CONF_CONTINUOUS:
+		*data = g_variant_new_boolean(devc->dslogic_continuous_mode);
+		break;
+	case SR_CONF_CLOCK_EDGE:
+		i = devc->dslogic_clock_edge;
+		if (i >= ARRAY_SIZE(signal_edge_names))
+			return SR_ERR_BUG;
+		*data = g_variant_new_string(signal_edge_names[0]);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -531,12 +591,35 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 	return SR_OK;
 }
 
-static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
-		const struct sr_channel_group *cg)
+/*
+ * Helper for mapping a string-typed configuration value to an index
+ * within a table of possible values.
+ */
+static int lookup_index(GVariant *value, const char *const *table, int len)
+{
+	const char *entry;
+	int i;
+
+	entry = g_variant_get_string(value, NULL);
+	if (!entry)
+		return -1;
+
+	/* Linear search is fine for very small tables. */
+	for (i = 0; i < len; i++) {
+		if (strcmp(entry, table[i]) == 0)
+			return i;
+	}
+
+	return -1;
+}
+
+static int config_set(uint32_t key, GVariant *data,
+	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
 	uint64_t arg;
 	int i, ret;
+	gdouble low, high;
 
 	(void)cg;
 
@@ -569,6 +652,38 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		devc->capture_ratio = g_variant_get_uint64(data);
 		ret = (devc->capture_ratio > 100) ? SR_ERR : SR_OK;
 		break;
+	case SR_CONF_VOLTAGE_THRESHOLD:
+		g_variant_get(data, "(dd)", &low, &high);
+		ret = SR_ERR_ARG;
+		for (i = 0; (unsigned int)i < ARRAY_SIZE(volt_thresholds); i++) {
+			if (fabs(volt_thresholds[i].low - low) < 0.1 &&
+			    fabs(volt_thresholds[i].high - high) < 0.1) {
+				devc->dslogic_voltage_threshold = volt_thresholds[i].range;
+				break;
+			}
+		}
+		if (!strcmp(devc->profile->model, "DSLogic")) {
+			if (devc->dslogic_voltage_threshold == DS_VOLTAGE_RANGE_5_V)
+				ret = dslogic_fpga_firmware_upload(sdi, DSLOGIC_FPGA_FIRMWARE_5V);
+			else
+				ret = dslogic_fpga_firmware_upload(sdi, DSLOGIC_FPGA_FIRMWARE_3V3);
+		} else if (!strcmp(devc->profile->model, "DSLogic Pro")) {
+			ret = dslogic_fpga_firmware_upload(sdi, DSLOGIC_PRO_FPGA_FIRMWARE);
+		}
+		break;
+	case SR_CONF_EXTERNAL_CLOCK:
+		devc->dslogic_external_clock = g_variant_get_boolean(data);
+		break;
+	case SR_CONF_CONTINUOUS:
+		devc->dslogic_continuous_mode = g_variant_get_boolean(data);
+		break;
+	case SR_CONF_CLOCK_EDGE:
+		i = lookup_index(data, signal_edge_names,
+		 		   ARRAY_SIZE(signal_edge_names));
+		if (i < 0)
+			return SR_ERR_ARG;
+		devc->dslogic_clock_edge = i;
+		break;		
 	default:
 		ret = SR_ERR_NA;
 	}
@@ -576,12 +691,13 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	return ret;
 }
 
-static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
-		const struct sr_channel_group *cg)
+static int config_list(uint32_t key, GVariant **data,
+	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
-	GVariant *gvar;
+	GVariant *gvar, *range[2];
 	GVariantBuilder gvb;
+	unsigned int i;
 
 	(void)cg;
 
@@ -591,16 +707,35 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 				scanopts, ARRAY_SIZE(scanopts), sizeof(uint32_t));
 		break;
 	case SR_CONF_DEVICE_OPTIONS:
-		if (!sdi)
+		if (!sdi) {
 			*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-					drvopts, ARRAY_SIZE(drvopts), sizeof(uint32_t));
-		else
-			*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-					devopts, ARRAY_SIZE(devopts), sizeof(uint32_t));
+				drvopts, ARRAY_SIZE(drvopts), sizeof(uint32_t));
+		} else {
+			devc = sdi->priv;
+			if (!devc->dslogic)
+				*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+								  devopts, ARRAY_SIZE(devopts), sizeof(uint32_t));
+			else
+				*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+								  dslogic_devopts, ARRAY_SIZE(dslogic_devopts), sizeof(uint32_t));
+		}
 		break;
-	case SR_CONF_SAMPLERATE:
+	case SR_CONF_VOLTAGE_THRESHOLD:
 		if (!sdi->priv)
 			return SR_ERR_ARG;
+		devc = sdi->priv;
+		if (!devc->dslogic)
+			return SR_ERR_NA;
+		g_variant_builder_init(&gvb, G_VARIANT_TYPE_ARRAY);
+		for (i = 0; i < ARRAY_SIZE(volt_thresholds); i++) {
+			range[0] = g_variant_new_double(volt_thresholds[i].low);
+			range[1] = g_variant_new_double(volt_thresholds[i].high);
+			gvar = g_variant_new_tuple(range, 2);
+			g_variant_builder_add_value(&gvb, gvar);
+		}
+		*data = g_variant_builder_end(&gvb);
+		break;
+	case SR_CONF_SAMPLERATE:
 		devc = sdi->priv;
 		g_variant_builder_init(&gvb, G_VARIANT_TYPE("a{sv}"));
 		gvar = g_variant_new_fixed_array(G_VARIANT_TYPE("t"), devc->samplerates,
@@ -612,6 +747,10 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_INT32,
 				soft_trigger_matches, ARRAY_SIZE(soft_trigger_matches),
 				sizeof(int32_t));
+		break;
+	case SR_CONF_CLOCK_EDGE:
+		*data = g_variant_new_strv(signal_edge_names,
+			ARRAY_SIZE(signal_edge_names));
 		break;
 	default:
 		return SR_ERR_NA;
@@ -654,7 +793,7 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 	devc->acq_aborted = FALSE;
 	devc->empty_transfer_count = 0;
 
-	if ((trigger = sr_session_trigger_get(sdi->session))) {
+	if ((trigger = sr_session_trigger_get(sdi->session)) && !devc->dslogic) {
 		int pre_trigger_samples = 0;
 		if (devc->limit_samples > 0)
 			pre_trigger_samples = devc->capture_ratio * devc->limit_samples/100;
@@ -666,6 +805,19 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 		devc->trigger_fired = TRUE;
 
 	num_transfers = fx2lafw_get_number_of_transfers(devc);
+
+	//if (devc->dslogic)
+	//	num_transfers = dslogic_get_number_of_transfers(devc);
+
+	if (devc->dslogic) {
+		if (devc->cur_samplerate == SR_MHZ(100))
+			num_transfers = 16;
+		else if (devc->cur_samplerate == SR_MHZ(200))
+			num_transfers = 8;
+		else if (devc->cur_samplerate == SR_MHZ(400))
+			num_transfers = 4;
+	}
+
 	size = fx2lafw_get_buffer_size(devc);
 	devc->submitted_transfers = 0;
 
@@ -687,6 +839,7 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 		libusb_fill_bulk_transfer(transfer, usb->devhdl,
 				endpoint | LIBUSB_ENDPOINT_IN, buf, size,
 				fx2lafw_receive_transfer, (void *)sdi, timeout);
+		sr_info("submitting transfer: %d", i);
 		if ((ret = libusb_submit_transfer(transfer)) != 0) {
 			sr_err("Failed to submit transfer: %s.",
 			       libusb_error_name(ret));
@@ -699,8 +852,12 @@ static int start_transfers(const struct sr_dev_inst *sdi)
 		devc->submitted_transfers++;
 	}
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	if (devc->profile->dev_caps & DEV_CAPS_AX_ANALOG)
+		devc->send_data_proc = mso_send_data_proc;
+	else
+		devc->send_data_proc = la_send_data_proc;
+
+	std_session_send_df_header(sdi);
 
 	return SR_OK;
 }
@@ -709,19 +866,31 @@ static void LIBUSB_CALL dslogic_trigger_receive(struct libusb_transfer *transfer
 {
 	const struct sr_dev_inst *sdi;
 	struct dslogic_trigger_pos *tpos;
+	struct dev_context *devc;
 
 	sdi = transfer->user_data;
-
-	if (transfer->status == LIBUSB_TRANSFER_COMPLETED
+	devc = sdi->priv;
+	if (transfer->status == LIBUSB_TRANSFER_CANCELLED) {
+		sr_dbg("Trigger transfer canceled.");
+		/* Terminate session. */
+		std_session_send_df_end(sdi);
+		usb_source_remove(sdi->session, devc->ctx);
+		devc->num_transfers = 0;
+		g_free(devc->transfers);
+		if (devc->stl) {
+			soft_trigger_logic_free(devc->stl);
+			devc->stl = NULL;
+		}
+	} else if (transfer->status == LIBUSB_TRANSFER_COMPLETED
 			&& transfer->actual_length == sizeof(struct dslogic_trigger_pos)) {
 		tpos = (struct dslogic_trigger_pos *)transfer->buffer;
-		sr_dbg("tpos real_pos %.8x ram_saddr %.8x", tpos->real_pos, tpos->ram_saddr);
+		sr_info("tpos real_pos %d ram_saddr %d cnt %d", tpos->real_pos,
+			tpos->ram_saddr, tpos->remain_cnt);
+		devc->trigger_pos = tpos->real_pos;
 		g_free(tpos);
 		start_transfers(sdi);
 	}
-
 	libusb_free_transfer(transfer);
-
 }
 
 static int dslogic_trigger_request(const struct sr_dev_inst *sdi)
@@ -729,15 +898,26 @@ static int dslogic_trigger_request(const struct sr_dev_inst *sdi)
 	struct sr_usb_dev_inst *usb;
 	struct libusb_transfer *transfer;
 	struct dslogic_trigger_pos *tpos;
+	struct dev_context *devc;
 	int ret;
 
 	usb = sdi->conn;
+	devc = sdi->priv;
 
 	if ((ret = dslogic_stop_acquisition(sdi)) != SR_OK)
 		return ret;
 
 	if ((ret = dslogic_fpga_configure(sdi)) != SR_OK)
 		return ret;
+
+	/* If this is a DSLogic Pro, set the voltage threshold. */
+	if (!strcmp(devc->profile->model, "DSLogic Pro")){
+		if (devc->dslogic_voltage_threshold == DS_VOLTAGE_RANGE_18_33_V) {
+			dslogic_set_vth(sdi, 1.4);
+		} else {
+			dslogic_set_vth(sdi, 3.3);
+		}
+	}
 
 	if ((ret = dslogic_start_acquisition(sdi)) != SR_OK)
 		return ret;
@@ -755,15 +935,50 @@ static int dslogic_trigger_request(const struct sr_dev_inst *sdi)
 		return SR_ERR;
 	}
 
+	devc->transfers = g_try_malloc0(sizeof(*devc->transfers));
+	if (!devc->transfers) {
+		sr_err("USB trigger_pos transfer malloc failed.");
+		return SR_ERR_MALLOC;
+	}
+	devc->num_transfers = 1;
+	devc->submitted_transfers++;
+	devc->transfers[0] = transfer;
+
 	return ret;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int configure_channels(const struct sr_dev_inst *sdi)
+{
+	struct dev_context *devc;
+	const GSList *l;
+	int p;
+	struct sr_channel *ch;
+
+	devc = sdi->priv;
+
+	g_slist_free(devc->enabled_analog_channels);
+	devc->enabled_analog_channels = NULL;
+	memset(devc->ch_enabled, 0, sizeof(devc->ch_enabled));
+
+	for (l = sdi->channels, p = 0; l; l = l->next, p++) {
+		ch = l->data;
+		if ((p <= NUM_CHANNELS) && (ch->type == SR_CHANNEL_ANALOG)) {
+			devc->ch_enabled[p] = ch->enabled;
+			devc->enabled_analog_channels =
+			    g_slist_append(devc->enabled_analog_channels, ch);
+		}
+	}
+
+	return SR_OK;
+}
+
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di;
 	struct drv_context *drvc;
 	struct dev_context *devc;
 	int timeout, ret;
+	size_t size;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -773,10 +988,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	devc = sdi->priv;
 
 	devc->ctx = drvc->sr_ctx;
-	devc->cb_data = cb_data;
 	devc->sent_samples = 0;
 	devc->empty_transfer_count = 0;
 	devc->acq_aborted = FALSE;
+
+	if (configure_channels(sdi) != SR_OK) {
+		sr_err("Failed to configure channels.");
+		return SR_ERR;
+	}
 
 	timeout = fx2lafw_get_timeout(devc);
 	usb_source_add(sdi->session, devc->ctx, timeout, receive_data, drvc);
@@ -784,6 +1003,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (devc->dslogic) {
 		dslogic_trigger_request(sdi);
 	} else {
+		size = fx2lafw_get_buffer_size(devc);
+		/* Prepare for analog sampling. */
+		if (devc->profile->dev_caps & DEV_CAPS_AX_ANALOG) {
+			/* We need a buffer half the size of a transfer. */
+			devc->logic_buffer = g_try_malloc(size / 2);
+			devc->analog_buffer = g_try_malloc(
+				sizeof(float) * size / 2);
+		}
 		start_transfers(sdi);
 		if ((ret = fx2lafw_command_start_acquisition(sdi)) != SR_OK) {
 			fx2lafw_abort_acquisition(devc);
@@ -794,24 +1021,29 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	(void)cb_data;
+	struct dev_context *devc;
+
+	devc = sdi->priv;
+
+	if (devc->dslogic)
+		dslogic_stop_acquisition(sdi);
 
 	fx2lafw_abort_acquisition(sdi->priv);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver fx2lafw_driver_info = {
+static struct sr_dev_driver fx2lafw_driver_info = {
 	.name = "fx2lafw",
 	.longname = "fx2lafw (generic driver for FX2 based LAs)",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = NULL,
+	.dev_list = std_dev_list,
+	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
@@ -821,3 +1053,4 @@ SR_PRIV struct sr_dev_driver fx2lafw_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(fx2lafw_driver_info);

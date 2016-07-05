@@ -31,12 +31,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_SAMPLERATE | SR_CONF_GET,
 };
 
-SR_PRIV struct sr_dev_driver gwinstek_gds_800_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
+static struct sr_dev_driver gwinstek_gds_800_driver_info;
 
 static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
 {
@@ -93,16 +88,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	return sr_scpi_scan(di->context, options, probe_device);
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	int ret;
@@ -135,13 +120,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	dev_clear(di);
-
-	return SR_OK;
-}
-
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -149,8 +127,10 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 
 	(void)cg;
 
-	if (!sdi || !(devc = sdi->priv))
+	if (!sdi)
 		return SR_ERR_ARG;
+
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
@@ -170,11 +150,13 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	(void)cg;
 
-	if (!sdi || !(devc = sdi->priv))
+	if (!sdi)
 		return SR_ERR_ARG;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
+
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_LIMIT_FRAMES:
@@ -209,12 +191,10 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_scpi_dev_inst *scpi;
 	struct dev_context *devc;
-
-	(void)cb_data;
 
 	scpi = sdi->conn;
 	devc = sdi->priv;
@@ -231,13 +211,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct sr_scpi_dev_inst *scpi;
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
 
 	scpi = sdi->conn;
 	devc = sdi->priv;
@@ -251,8 +229,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 		packet.type = SR_DF_FRAME_END;
 		sr_session_send(sdi, &packet);
 
-		packet.type = SR_DF_END;
-		sr_session_send(sdi, &packet);
+		std_session_send_df_end(sdi);
 
 		devc->df_started = FALSE;
 	}
@@ -262,15 +239,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver gwinstek_gds_800_driver_info = {
+static struct sr_dev_driver gwinstek_gds_800_driver_info = {
 	.name = "gwinstek-gds-800",
 	.longname = "GW Instek GDS-800 series",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = dev_clear,
+	.dev_list = std_dev_list,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
@@ -280,3 +256,4 @@ SR_PRIV struct sr_dev_driver gwinstek_gds_800_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(gwinstek_gds_800_driver_info);

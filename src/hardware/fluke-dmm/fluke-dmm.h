@@ -33,6 +33,7 @@ enum {
 	FLUKE_189,
 	FLUKE_287,
 	FLUKE_190,
+	FLUKE_289,
 };
 
 /* Supported device profiles */
@@ -48,23 +49,18 @@ struct flukedmm_profile {
 /* Private, per-device-instance driver context. */
 struct dev_context {
 	const struct flukedmm_profile *profile;
-	uint64_t limit_samples;
-	uint64_t limit_msec;
-
-	/* Opaque pointer passed in by the frontend. */
-	void *cb_data;
+	struct sr_sw_limits limits;
 
 	/* Runtime. */
-	uint64_t num_samples;
 	char buf[FLUKEDMM_BUFSIZE];
 	int buflen;
 	int64_t cmd_sent_at;
 	int expect_response;
 	int meas_type;
 	int is_relative;
-	int mq;
-	int unit;
-	int mqflags;
+	enum sr_mq mq;
+	enum sr_unit unit;
+	enum sr_mqflag mqflags;
 };
 
 SR_PRIV int fluke_receive_data(int fd, int revents, void *cb_data);

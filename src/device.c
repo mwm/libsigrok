@@ -197,6 +197,99 @@ SR_API gboolean sr_dev_has_option(const struct sr_dev_inst *sdi, int key)
 }
 
 /**
+ * Enumerate the configuration options of the specified item.
+ *
+ * @param driver Pointer to the driver to be checked. Must not be NULL.
+ * @param sdi Pointer to the device instance to be checked. May be NULL to
+ *            check driver options.
+ * @param cg  Pointer to a channel group, if a specific channel group is to
+ *            be checked. Must be NULL to check device-wide options.
+ * @return A GArray * of enum sr_configkey values, or NULL on invalid
+ *         arguments. The array must be freed by the caller using
+ *         g_array_free().
+ *
+ * @since 0.4.0
+ */
+SR_API GArray *sr_dev_options(
+		const struct sr_dev_driver *driver, const struct sr_dev_inst *sdi,
+		const struct sr_channel_group *cg)
+{
+	GVariant *gvar;
+	const uint32_t *opts;
+	uint32_t opt;
+	gsize num_opts, i;
+	GArray *result;
+
+	if (!driver || !driver->config_list)
+		return NULL;
+
+	if (sdi && sdi->driver != driver)
+		return NULL;
+
+	if (driver->config_list(SR_CONF_DEVICE_OPTIONS, &gvar, sdi, cg) != SR_OK)
+		return NULL;
+
+	opts = g_variant_get_fixed_array(gvar, &num_opts, sizeof(uint32_t));
+
+	result = g_array_sized_new(FALSE, FALSE, sizeof(uint32_t), num_opts);
+
+	for (i = 0; i < num_opts; i++) {
+		opt = opts[i] & SR_CONF_MASK;
+		g_array_insert_val(result, i, opt);
+	}
+
+	g_variant_unref(gvar);
+
+	return result;
+}
+
+/**
+ * Enumerate the configuration capabilities supported by a device instance
+ * for a given configuration key.
+ *
+ * @param sdi Pointer to the device instance to be checked. Must not be NULL.
+ *            If the device's 'driver' field is NULL (virtual device), this
+ *            function will always return FALSE (virtual devices don't have
+ *            a hardware capabilities list).
+ * @param cg  Pointer to a channel group, if a specific channel group is to
+ *            be checked. Must be NULL to check device-wide options.
+ * @param[in] key The option that should be checked for is supported by the
+ *            specified device.
+ *
+ * @retval A bitmask of enum sr_configcap values, which will be zero for
+ *         invalid inputs or if the key is unsupported.
+ *
+ * @since 0.4.0
+ */
+SR_API int sr_dev_config_capabilities_list(const struct sr_dev_inst *sdi,
+		const struct sr_channel_group *cg, const int key)
+{
+	GVariant *gvar;
+	const int *devopts;
+	gsize num_opts, i;
+	int ret;
+
+	if (!sdi || !sdi->driver || !sdi->driver->config_list)
+		return 0;
+
+	if (sdi->driver->config_list(SR_CONF_DEVICE_OPTIONS,
+				&gvar, sdi, cg) != SR_OK)
+		return 0;
+
+	ret = 0;
+	devopts = g_variant_get_fixed_array(gvar, &num_opts, sizeof(int32_t));
+	for (i = 0; i < num_opts; i++) {
+		if ((devopts[i] & SR_CONF_MASK) == key) {
+			ret = devopts[i] & ~SR_CONF_MASK;
+			break;
+		}
+	}
+	g_variant_unref(gvar);
+
+	return ret;
+}
+
+/**
  * Allocate and init a new user-generated device instance.
  *
  * @param vendor Device vendor
@@ -260,6 +353,9 @@ SR_PRIV void sr_dev_inst_free(struct sr_dev_inst *sdi)
 		g_free(cg);
 	}
 	g_slist_free(sdi->channel_groups);
+
+	if (sdi->session)
+		sr_session_dev_remove(sdi->session, sdi);
 
 	g_free(sdi->vendor);
 	g_free(sdi->model);

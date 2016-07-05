@@ -20,6 +20,9 @@
 
 #include <config.h>
 #include <glib.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#endif
 #include <libsigrok/libsigrok.h>
 #include "libsigrok-internal.h"
 
@@ -254,11 +257,14 @@ static int sanity_check_all_drivers(const struct sr_context *ctx)
 			sr_err("No dev_list in driver %d ('%s').", i, d);
 			errors++;
 		}
+		/* Note: dev_clear() is optional. */
 		/* Note: config_get() is optional. */
 		if (!drivers[i]->config_set) {
 			sr_err("No config_set in driver %d ('%s').", i, d);
 			errors++;
 		}
+		/* Note: config_channel_set() is optional. */
+		/* Note: config_commit() is optional. */
 		if (!drivers[i]->config_list) {
 			sr_err("No config_list in driver %d ('%s').", i, d);
 			errors++;
@@ -462,8 +468,9 @@ SR_API int sr_init(struct sr_context **ctx)
 {
 	int ret = SR_ERR;
 	struct sr_context *context;
-	struct sr_dev_driver ***lists, **drivers;
-	GArray *array;
+#ifdef _WIN32
+	WSADATA wsadata;
+#endif
 
 	print_versions();
 
@@ -474,13 +481,7 @@ SR_API int sr_init(struct sr_context **ctx)
 
 	context = g_malloc0(sizeof(struct sr_context));
 
-	/* Generate ctx->driver_list at runtime. */
-	array = g_array_new(TRUE, FALSE, sizeof(struct sr_dev_driver *));
-	for (lists = drivers_lists; *lists; lists++)
-		for (drivers = *lists; *drivers; drivers++)
-			g_array_append_val(array, *drivers);
-	context->driver_list = (struct sr_dev_driver **)array->data;
-	g_array_free(array, FALSE);
+	sr_drivers_init(context);
 
 	if (sanity_check_all_drivers(context) < 0) {
 		sr_err("Internal driver error(s), aborting.");
@@ -502,6 +503,14 @@ SR_API int sr_init(struct sr_context **ctx)
 		return ret;
 	}
 
+#ifdef _WIN32
+	if ((ret = WSAStartup(MAKEWORD(2, 2), &wsadata)) != 0) {
+		sr_err("WSAStartup failed with error code %d.", ret);
+		ret = SR_ERR;
+		goto done;
+	}
+#endif
+
 #ifdef HAVE_LIBUSB_1_0
 	ret = libusb_init(&context->libusb_ctx);
 	if (LIBUSB_SUCCESS != ret) {
@@ -516,7 +525,7 @@ SR_API int sr_init(struct sr_context **ctx)
 	context = NULL;
 	ret = SR_OK;
 
-#ifdef HAVE_LIBUSB_1_0
+#if defined(HAVE_LIBUSB_1_0) || defined(_WIN32)
 done:
 #endif
 	g_free(context);
@@ -541,6 +550,10 @@ SR_API int sr_exit(struct sr_context *ctx)
 	}
 
 	sr_hw_cleanup_all(ctx);
+
+#ifdef _WIN32
+	WSACleanup();
+#endif
 
 #ifdef HAVE_LIBUSB_1_0
 	libusb_exit(ctx->libusb_ctx);

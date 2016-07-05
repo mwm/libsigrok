@@ -41,7 +41,7 @@ static const uint32_t drvopts[] = {
 };
 
 static const uint32_t devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_CHANNEL_CONFIG | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_OVER_CURRENT_PROTECTION_ENABLED | SR_CONF_GET | SR_CONF_SET,
 };
@@ -75,33 +75,21 @@ static const struct pps_model models[] = {
 	},
 };
 
-SR_PRIV struct sr_dev_driver atten_pps3203_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options, int modelid)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_config *src;
 	struct sr_channel *ch;
 	struct sr_channel_group *cg;
 	struct sr_serial_dev_inst *serial;
-	GSList *l, *devices;
+	GSList *l;
 	const struct pps_model *model;
 	uint8_t packet[PACKET_SIZE];
 	unsigned int i;
 	int delay_ms, ret;
 	const char *conn, *serialcomm;
 	char channel[10];
-
-	devices = NULL;
-	drvc = di->context;
-	drvc->instances = NULL;
 
 	conn = serialcomm = NULL;
 	for (l = options; l; l = l->next) {
@@ -166,7 +154,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options, int modelid)
 	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup("Atten");
 	sdi->model = g_strdup(model->name);
-	sdi->driver = di;
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 	for (i = 0; i < MAX_CHANNELS; i++) {
@@ -184,29 +171,15 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options, int modelid)
 	devc->config = g_malloc0(sizeof(struct per_channel_config) * model->num_channels);
 	devc->delay_ms = delay_ms;
 	sdi->priv = devc;
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
 
 	serial_close(serial);
-	if (!devices)
-		sr_serial_dev_inst_free(serial);
 
-	return devices;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static GSList *scan_3203(struct sr_dev_driver *di, GSList *options)
 {
 	return scan(di, options, PPS_3203T_3S);
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -460,14 +433,11 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return std_serial_dev_close(sdi);
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	uint8_t packet[PACKET_SIZE];
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -481,7 +451,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	serial = sdi->conn;
 	serial_source_add(sdi->session, serial, G_IO_IN, 50,
 			atten_pps3xxx_receive_data, (void *)sdi);
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Send a "channel" configuration packet now. */
 	memset(packet, 0, PACKET_SIZE);
@@ -492,11 +462,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -507,14 +475,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver atten_pps3203_driver_info = {
+static struct sr_dev_driver atten_pps3203_driver_info = {
 	.name = "atten-pps3203",
 	.longname = "Atten PPS3203T-3S",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan_3203,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -525,3 +493,4 @@ SR_PRIV struct sr_dev_driver atten_pps3203_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(atten_pps3203_driver_info);

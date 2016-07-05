@@ -25,8 +25,6 @@
 #include "libsigrok-internal.h"
 #include "protocol.h"
 
-#define UNI_T_UT_D04_NEW "1a86.e008"
-
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -34,8 +32,8 @@ static const uint32_t scanopts[] = {
 static const uint32_t devopts[] = {
 	SR_CONF_MULTIMETER,
 	SR_CONF_CONTINUOUS,
-	SR_CONF_LIMIT_SAMPLES | SR_CONF_SET,
-	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
+	SR_CONF_LIMIT_SAMPLES | SR_CONF_SET | SR_CONF_GET,
+	SR_CONF_LIMIT_MSEC | SR_CONF_SET | SR_CONF_GET,
 };
 
 /*
@@ -45,16 +43,6 @@ static const uint32_t devopts[] = {
  * supports 19200, and setting an unsupported baudrate will result in the
  * default of 2400 being used (which will not work with this DMM, of course).
  */
-
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -97,20 +85,13 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->vendor = g_strdup(dmm->vendor);
 		sdi->model = g_strdup(dmm->device);
 		sdi->priv = devc;
-		sdi->driver = di;
 		sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
 		sdi->inst_type = SR_INST_USB;
 		sdi->conn = usb;
-		drvc->instances = g_slist_append(drvc->instances, sdi);
 		devices = g_slist_append(devices, sdi);
 	}
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -139,11 +120,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
-}
-
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -153,18 +129,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -189,18 +154,15 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 
 	devc = sdi->priv;
 
-	devc->cb_data = cb_data;
+	sr_sw_limits_acquisition_start(&devc->limits);
 
-	devc->starttime = g_get_monotonic_time();
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	sr_session_source_add(sdi->session, -1, 0, 10 /* poll_timeout */,
 		      uni_t_dmm_receive_data, (void *)sdi);
@@ -208,19 +170,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
-
 	sr_dbg("Stopping acquisition.");
-
-	/* Send end packet to the session bus. */
-	sr_dbg("Sending SR_DF_END.");
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
-
+	std_session_send_df_end(sdi);
 	sr_session_source_remove(sdi->session, -1);
 
 	return SR_OK;
@@ -228,16 +181,15 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 
 #define DMM(ID, CHIPSET, VENDOR, MODEL, BAUDRATE, PACKETSIZE, \
 			VALID, PARSE, DETAILS) \
-    &(struct dmm_info) { \
+    &((struct dmm_info) { \
 		{ \
 			.name = ID, \
 			.longname = VENDOR " " MODEL, \
 			.api_version = 1, \
-			.init = init, \
-			.cleanup = cleanup, \
+			.init = std_init, \
+			.cleanup = std_cleanup, \
 			.scan = scan, \
-			.dev_list = dev_list, \
-			.dev_clear = dev_clear, \
+			.dev_list = std_dev_list, \
 			.config_get = NULL, \
 			.config_set = config_set, \
 			.config_list = config_list, \
@@ -249,9 +201,9 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 		}, \
 		VENDOR, MODEL, BAUDRATE, PACKETSIZE, \
 		VALID, PARSE, DETAILS, sizeof(struct CHIPSET##_info) \
-	}
+	}).di
 
-SR_PRIV const struct dmm_info *uni_t_dmm_drivers[] = {
+SR_REGISTER_DEV_DRIVER_LIST(uni_t_dmm_drivers,
 	DMM(
 		"tecpel-dmm-8061", fs9721,
 		"Tecpel", "DMM-8061", 2400,
@@ -421,5 +373,4 @@ SR_PRIV const struct dmm_info *uni_t_dmm_drivers[] = {
 		sr_es519xx_19200_11b_packet_valid, sr_es519xx_19200_11b_parse,
 		NULL
 	),
-	NULL
-};
+);

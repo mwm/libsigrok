@@ -25,28 +25,28 @@ SR_PRIV int testo_set_serial_params(struct sr_usb_dev_inst *usb)
 {
 	int ret;
 
-    if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_BAUDRATE,
+	if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_BAUDRATE,
 			FTDI_BAUDRATE_115200, FTDI_INDEX, NULL, 0, 10)) < 0) {
-			sr_err("Failed to set baudrate: %s", libusb_error_name(ret));
-			return SR_ERR;
+		sr_err("Failed to set baudrate: %s", libusb_error_name(ret));
+		return SR_ERR;
 	}
 
-    if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_PARAMS,
+	if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_PARAMS,
 			FTDI_PARAMS_8N1, FTDI_INDEX, NULL, 0, 10)) < 0) {
-			sr_err("Failed to set comm parameters: %s", libusb_error_name(ret));
-			return SR_ERR;
+		sr_err("Failed to set comm parameters: %s", libusb_error_name(ret));
+		return SR_ERR;
 	}
 
-    if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_FLOWCTRL,
+	if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_FLOWCTRL,
 			FTDI_FLOW_NONE, FTDI_INDEX, NULL, 0, 10)) < 0) {
-			sr_err("Failed to set flow control: %s", libusb_error_name(ret));
-			return SR_ERR;
+		sr_err("Failed to set flow control: %s", libusb_error_name(ret));
+		return SR_ERR;
 	}
 
-    if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_MODEMCTRL,
+	if ((ret = libusb_control_transfer(usb->devhdl, 0x40, FTDI_SET_MODEMCTRL,
 			FTDI_MODEM_ALLHIGH, FTDI_INDEX, NULL, 0, 10)) < 0) {
-			sr_err("Failed to set modem control: %s", libusb_error_name(ret));
-			return SR_ERR;
+		sr_err("Failed to set modem control: %s", libusb_error_name(ret));
+		return SR_ERR;
 	}
 
 	return SR_OK;
@@ -158,8 +158,7 @@ SR_PRIV int testo_request_packet(const struct sr_dev_inst *sdi)
 			receive_transfer, (void *)sdi, 100);
 	if ((ret = libusb_submit_transfer(devc->out_transfer) != 0)) {
 		sr_err("Failed to request packet: %s.", libusb_error_name(ret));
-		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-				devc->cb_data);
+		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi);
 		return SR_ERR;
 	}
 	sr_dbg("Requested new packet.");
@@ -223,7 +222,10 @@ SR_PRIV void testo_receive_packet(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_channel *ch;
 	GString *dbg;
 	float value;
@@ -242,10 +244,11 @@ SR_PRIV void testo_receive_packet(const struct sr_dev_inst *sdi)
 		g_string_free(dbg, TRUE);
 	}
 
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
 	analog.num_samples = 1;
-	analog.mqflags = 0;
+	analog.meaning->mqflags = 0;
 	analog.data = &value;
 	/* Decode 7-byte values */
 	for (i = 0; i < devc->reply[6]; i++) {
@@ -253,20 +256,20 @@ SR_PRIV void testo_receive_packet(const struct sr_dev_inst *sdi)
 		value = binary32_le_to_float(buf);
 		switch (buf[4]) {
 		case 1:
-			analog.mq = SR_MQ_TEMPERATURE;
-			analog.unit = SR_UNIT_CELSIUS;
+			analog.meaning->mq = SR_MQ_TEMPERATURE;
+			analog.meaning->unit = SR_UNIT_CELSIUS;
 			break;
 		case 3:
-			analog.mq = SR_MQ_RELATIVE_HUMIDITY;
-			analog.unit = SR_UNIT_HUMIDITY_293K;
+			analog.meaning->mq = SR_MQ_RELATIVE_HUMIDITY;
+			analog.meaning->unit = SR_UNIT_HUMIDITY_293K;
 			break;
 		case 5:
-			analog.mq = SR_MQ_WIND_SPEED;
-			analog.unit = SR_UNIT_METER_SECOND;
+			analog.meaning->mq = SR_MQ_WIND_SPEED;
+			analog.meaning->unit = SR_UNIT_METER_SECOND;
 			break;
 		case 24:
-			analog.mq = SR_MQ_PRESSURE;
-			analog.unit = SR_UNIT_HECTOPASCAL;
+			analog.meaning->mq = SR_MQ_PRESSURE;
+			analog.meaning->unit = SR_UNIT_HECTOPASCAL;
 			break;
 		default:
 			sr_dbg("Unsupported measurement unit %d.", buf[4]);
@@ -284,8 +287,8 @@ SR_PRIV void testo_receive_packet(const struct sr_dev_inst *sdi)
 			return;
 		}
 		ch = g_slist_nth_data(sdi->channels, i);
-		analog.channels = g_slist_append(NULL, ch);
+		analog.meaning->channels = g_slist_append(NULL, ch);
 		sr_session_send(sdi, &packet);
-		g_slist_free(analog.channels);
+		g_slist_free(analog.meaning->channels);
 	}
 }

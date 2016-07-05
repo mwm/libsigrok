@@ -20,8 +20,6 @@
 #include <config.h>
 #include "protocol.h"
 
-extern SR_PRIV struct sr_dev_driver ols_driver_info;
-
 SR_PRIV int send_shortcommand(struct sr_serial_dev_inst *serial,
 		uint8_t command)
 {
@@ -149,7 +147,6 @@ SR_PRIV struct sr_dev_inst *get_metadata(struct sr_serial_dev_inst *serial)
 
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	sdi->status = SR_ST_INACTIVE;
-	sdi->driver = &ols_driver_info;
 	devc = ols_dev_new();
 	sdi->priv = devc;
 
@@ -315,15 +312,12 @@ SR_PRIV int ols_set_samplerate(const struct sr_dev_inst *sdi,
 
 SR_PRIV void abort_acquisition(const struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
 	struct sr_serial_dev_inst *serial;
 
 	serial = sdi->conn;
 	serial_source_remove(sdi->session, serial);
 
-	/* Terminate session */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 }
 
 SR_PRIV int ols_receive_data(int fd, int revents, void *cb_data)
@@ -475,12 +469,12 @@ SR_PRIV int ols_receive_data(int fd, int revents, void *cb_data)
 				logic.unitsize = 4;
 				logic.data = devc->raw_sample_buf +
 					(devc->limit_samples - devc->num_samples) * 4;
-				sr_session_send(cb_data, &packet);
+				sr_session_send(sdi, &packet);
 			}
 
 			/* Send the trigger. */
 			packet.type = SR_DF_TRIGGER;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 
 			/* Send post-trigger samples. */
 			packet.type = SR_DF_LOGIC;
@@ -489,7 +483,7 @@ SR_PRIV int ols_receive_data(int fd, int revents, void *cb_data)
 			logic.unitsize = 4;
 			logic.data = devc->raw_sample_buf + devc->trigger_at * 4 +
 				(devc->limit_samples - devc->num_samples) * 4;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		} else {
 			/* no trigger was used */
 			packet.type = SR_DF_LOGIC;
@@ -498,7 +492,7 @@ SR_PRIV int ols_receive_data(int fd, int revents, void *cb_data)
 			logic.unitsize = 4;
 			logic.data = devc->raw_sample_buf +
 				(devc->limit_samples - devc->num_samples) * 4;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		}
 		g_free(devc->raw_sample_buf);
 

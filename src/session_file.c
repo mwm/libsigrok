@@ -163,6 +163,27 @@ SR_PRIV int sr_sessionfile_check(const char *filename)
 	return SR_OK;
 }
 
+SR_PRIV struct sr_dev_inst *sr_session_prepare_sdi(const char *filename, struct sr_session **session)
+{
+	struct sr_dev_inst *sdi = NULL;
+
+	sdi = g_malloc0(sizeof(struct sr_dev_inst));
+	sdi->driver = &session_driver;
+	sdi->status = SR_ST_ACTIVE;
+	if (!session_driver_initialized) {
+		/* first device, init the driver */
+		session_driver_initialized = 1;
+		sdi->driver->init(sdi->driver, NULL);
+	}
+	sr_dev_open(sdi);
+	sr_session_dev_add(*session, sdi);
+	(*session)->owned_devs = g_slist_append((*session)->owned_devs, sdi);
+	sr_config_set(sdi, NULL, SR_CONF_SESSIONFILE,
+			g_variant_new_string(filename));
+
+	return sdi;
+}
+
 /**
  * Load the session from the specified filename.
  *
@@ -186,10 +207,12 @@ SR_API int sr_session_load(struct sr_context *ctx, const char *filename,
 	struct sr_channel *ch;
 	int ret, i, j;
 	uint64_t tmp_u64;
-	int total_channels, k;
+	int total_channels, total_analog, k;
+	GSList *l;
 	int unitsize;
 	char **sections, **keys, *val;
 	char channelname[SR_MAX_CHANNELNAME_LEN + 1];
+	gboolean file_has_logic;
 
 	if ((ret = sr_sessionfile_check(filename)) != SR_OK)
 		return ret;
@@ -211,8 +234,11 @@ SR_API int sr_session_load(struct sr_context *ctx, const char *filename,
 		return ret;
 	}
 
+	total_channels = 0;
+
 	error = NULL;
 	ret = SR_OK;
+	file_has_logic = FALSE;
 	sections = g_key_file_get_groups(kf, NULL);
 	for (i = 0; sections[i] && ret == SR_OK; i++) {
 		if (!strcmp(sections[i], "global"))
@@ -222,32 +248,29 @@ SR_API int sr_session_load(struct sr_context *ctx, const char *filename,
 			/* device section */
 			sdi = NULL;
 			keys = g_key_file_get_keys(kf, sections[i], NULL, NULL);
+
+			/* File contains analog data if there are analog channels. */
+			total_analog = g_key_file_get_integer(kf, sections[i],
+					"total analog",	&error);
+			if (total_analog > 0 && !error)
+				sdi = sr_session_prepare_sdi(filename, session);
+			g_clear_error(&error);
+
+			/* File contains logic data if a capturefile is set. */
+			val = g_key_file_get_string(kf, sections[i],
+				"capturefile", &error);
+			if (val && !error) {
+				if (!sdi)
+					sdi = sr_session_prepare_sdi(filename, session);
+				sr_config_set(sdi, NULL, SR_CONF_CAPTUREFILE,
+						g_variant_new_string(val));
+				g_free(val);
+				file_has_logic = TRUE;
+			}
+			g_clear_error(&error);
+
 			for (j = 0; keys[j]; j++) {
-				if (!strcmp(keys[j], "capturefile")) {
-					val = g_key_file_get_string(kf, sections[i],
-							keys[j], &error);
-					if (!val) {
-						ret = SR_ERR_DATA;
-						break;
-					}
-					sdi = g_malloc0(sizeof(struct sr_dev_inst));
-					sdi->driver = &session_driver;
-					sdi->status = SR_ST_ACTIVE;
-					if (!session_driver_initialized) {
-						/* first device, init the driver */
-						session_driver_initialized = 1;
-						sdi->driver->init(sdi->driver, NULL);
-					}
-					sr_dev_open(sdi);
-					sr_session_dev_add(*session, sdi);
-					(*session)->owned_devs = g_slist_append(
-							(*session)->owned_devs, sdi);
-					sr_config_set(sdi, NULL, SR_CONF_SESSIONFILE,
-							g_variant_new_string(filename));
-					sr_config_set(sdi, NULL, SR_CONF_CAPTUREFILE,
-							g_variant_new_string(val));
-					g_free(val);
-				} else if (!strcmp(keys[j], "samplerate")) {
+				if (!strcmp(keys[j], "samplerate")) {
 					val = g_key_file_get_string(kf, sections[i],
 							keys[j], &error);
 					if (!sdi || !val || sr_parse_sizestring(val,
@@ -259,7 +282,7 @@ SR_API int sr_session_load(struct sr_context *ctx, const char *filename,
 					g_free(val);
 					sr_config_set(sdi, NULL, SR_CONF_SAMPLERATE,
 							g_variant_new_uint64(tmp_u64));
-				} else if (!strcmp(keys[j], "unitsize")) {
+				} else if (!strcmp(keys[j], "unitsize") && file_has_logic) {
 					unitsize = g_key_file_get_integer(kf, sections[i],
 							keys[j], &error);
 					if (!sdi || unitsize <= 0 || error) {
@@ -278,18 +301,61 @@ SR_API int sr_session_load(struct sr_context *ctx, const char *filename,
 					sr_config_set(sdi, NULL, SR_CONF_NUM_LOGIC_CHANNELS,
 							g_variant_new_int32(total_channels));
 					for (k = 0; k < total_channels; k++) {
-						g_snprintf(channelname, sizeof channelname,
+						g_snprintf(channelname, sizeof(channelname),
 								"%d", k);
 						sr_channel_new(sdi, k, SR_CHANNEL_LOGIC,
 								FALSE, channelname);
 					}
+				} else if (!strcmp(keys[j], "total analog")) {
+					total_analog = g_key_file_get_integer(kf,
+							sections[i], keys[j], &error);
+					if (!sdi || total_analog < 0 || error) {
+						ret = SR_ERR_DATA;
+						break;
+					}
+					sr_config_set(sdi, NULL, SR_CONF_NUM_ANALOG_CHANNELS,
+							g_variant_new_int32(total_analog));
+					for (k = total_channels; k < (total_channels + total_analog); k++) {
+						g_snprintf(channelname, sizeof(channelname),
+								"%d", k);
+						sr_channel_new(sdi, k, SR_CHANNEL_ANALOG,
+								FALSE, channelname);
+					}
 				} else if (!strncmp(keys[j], "probe", 5)) {
-					tmp_u64 = g_ascii_strtoull(keys[j]+5, NULL, 10);
+					tmp_u64 = g_ascii_strtoull(keys[j] + 5, NULL, 10);
 					if (!sdi || tmp_u64 == 0 || tmp_u64 > G_MAXINT) {
 						ret = SR_ERR_DATA;
 						break;
 					}
 					ch = g_slist_nth_data(sdi->channels, tmp_u64 - 1);
+					if (!ch) {
+						ret = SR_ERR_DATA;
+						break;
+					}
+					val = g_key_file_get_string(kf, sections[i],
+							keys[j], &error);
+					if (!val) {
+						ret = SR_ERR_DATA;
+						break;
+					}
+					/* sr_session_save() */
+					sr_dev_channel_name_set(ch, val);
+					g_free(val);
+					sr_dev_channel_enable(ch, TRUE);
+				} else if (!strncmp(keys[j], "analog", 6)) {
+					tmp_u64 = g_ascii_strtoull(keys[j]+6, NULL, 10);
+					if (!sdi || tmp_u64 == 0 || tmp_u64 > G_MAXINT) {
+						ret = SR_ERR_DATA;
+						break;
+					}
+					ch = NULL;
+					for (l = sdi->channels; l; l = l->next) {
+						ch = l->data;
+						if ((guint64)ch->index == tmp_u64 - 1)
+							break;
+						else
+							ch = NULL;
+					}
 					if (!ch) {
 						ret = SR_ERR_DATA;
 						break;

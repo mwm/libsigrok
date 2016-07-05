@@ -162,8 +162,6 @@ enum sr_packettype {
 	SR_DF_TRIGGER,
 	/** Payload is struct sr_datafeed_logic. */
 	SR_DF_LOGIC,
-	/** DEPRECATED! Use SR_DF_ANALOG instead. */
-	SR_DF_ANALOG_OLD,
 	/** Beginning of frame. No payload. */
 	SR_DF_FRAME_BEGIN,
 	/** End of frame. No payload. */
@@ -383,6 +381,8 @@ enum sr_mqflag {
 	SR_MQFLAG_REFERENCE = 0x80000,
 	/** Unstable value (hasn't settled yet). */
 	SR_MQFLAG_UNSTABLE = 0x100000,
+	/** Measurement is four wire (e.g. Kelvin connection). */
+	SR_MQFLAG_FOUR_WIRE = 0x200000,
 
 	/*
 	 * Update mq_strings[] (analog.c) and fancyprint() (output/analog.c)
@@ -494,24 +494,6 @@ struct sr_datafeed_logic {
 	void *data;
 };
 
-/** Analog datafeed payload for type SR_DF_ANALOG_OLD. */
-struct sr_datafeed_analog_old {
-	/** The channels for which data is included in this packet. */
-	GSList *channels;
-	/** Number of samples in data */
-	int num_samples;
-	/** Measured quantity (voltage, current, temperature, and so on).
-	 *  Use SR_MQ_VOLTAGE, ... */
-	int mq;
-	/** Unit in which the MQ is measured. Use SR_UNIT_VOLT, ... */
-	int unit;
-	/** Bitmap with extra information about the MQ. Use SR_MQFLAG_AC, ... */
-	uint64_t mqflags;
-	/** The analog value(s). The data is interleaved according to
-	 * the channels list. */
-	float *data;
-};
-
 /** Analog datafeed payload for type SR_DF_ANALOG. */
 struct sr_datafeed_analog {
 	void *data;
@@ -526,7 +508,7 @@ struct sr_analog_encoding {
 	gboolean is_signed;
 	gboolean is_float;
 	gboolean is_bigendian;
-	uint8_t digits;
+	int8_t digits;
 	gboolean is_digits_decimal;
 	struct sr_rational scale;
 	struct sr_rational offset;
@@ -540,7 +522,7 @@ struct sr_analog_meaning {
 };
 
 struct sr_analog_spec {
-	uint8_t spec_digits;
+	int8_t spec_digits;
 };
 
 /** Generic option struct used by various subsystems. */
@@ -652,10 +634,15 @@ struct sr_key_info {
 	const char *description;
 };
 
-#define SR_CONF_GET  (1 << 31)
-#define SR_CONF_SET  (1 << 30)
-#define SR_CONF_LIST (1 << 29)
-#define SR_CONF_MASK 0x1fffffff
+/** Configuration capabilities. */
+enum sr_configcap {
+	/** Value can be read. */
+	SR_CONF_GET = (1 << 31),
+	/** Value can be written. */
+	SR_CONF_SET = (1 << 30),
+	/** Possible values can be enumerated. */
+	SR_CONF_LIST = (1 << 29),
+};
 
 /** Configuration keys */
 enum sr_configkey {
@@ -971,18 +958,21 @@ enum sr_configkey {
 	/** Over-temperature protection (OTP) active. */
 	SR_CONF_OVER_TEMPERATURE_PROTECTION_ACTIVE,
 
+	/** Under-voltage condition. */
+	SR_CONF_UNDER_VOLTAGE_CONDITION,
+
+	/** Under-voltage condition active. */
+	SR_CONF_UNDER_VOLTAGE_CONDITION_ACTIVE,
+
+	/** Trigger level. */
+	SR_CONF_TRIGGER_LEVEL,
+
 	/* Update sr_key_info_config[] (hwdriver.c) upon changes! */
 
 	/*--- Special stuff -------------------------------------------------*/
 
-	/** Scan options supported by the driver. */
-	SR_CONF_SCAN_OPTIONS = 40000,
-
-	/** Device options for a particular device. */
-	SR_CONF_DEVICE_OPTIONS,
-
 	/** Session filename. */
-	SR_CONF_SESSIONFILE,
+	SR_CONF_SESSIONFILE = 40000,
 
 	/** The device supports specifying a capturefile to inject. */
 	SR_CONF_CAPTUREFILE,
@@ -1009,6 +999,9 @@ enum sr_configkey {
 
 	/** The device supports setting a probe factor. */
 	SR_CONF_PROBE_FACTOR,
+
+	/** Number of powerline cycles for ADC integration time. */
+	SR_CONF_ADC_POWERLINE_CYCLES,
 
 	/* Update sr_key_info_config[] (hwdriver.c) upon changes! */
 
@@ -1146,11 +1139,9 @@ struct sr_dev_driver {
 	/** Close device */
 	int (*dev_close) (struct sr_dev_inst *sdi);
 	/** Begin data acquisition on the specified device. */
-	int (*dev_acquisition_start) (const struct sr_dev_inst *sdi,
-			void *cb_data);
+	int (*dev_acquisition_start) (const struct sr_dev_inst *sdi);
 	/** End data acquisition on the specified device. */
-	int (*dev_acquisition_stop) (struct sr_dev_inst *sdi,
-			void *cb_data);
+	int (*dev_acquisition_stop) (struct sr_dev_inst *sdi);
 
 	/* Dynamic */
 	/** Device driver context, considered private. Initialized by init(). */

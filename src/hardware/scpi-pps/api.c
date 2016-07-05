@@ -23,7 +23,8 @@
 #include "scpi.h"
 #include "protocol.h"
 
-SR_PRIV struct sr_dev_driver scpi_pps_driver_info;
+static struct sr_dev_driver scpi_pps_driver_info;
+static struct sr_dev_driver hp_ib_pps_driver_info;
 
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
@@ -41,12 +42,10 @@ static const struct pps_channel_instance pci[] = {
 	{ SR_MQ_FREQUENCY, SCPI_CMD_GET_MEAS_FREQUENCY, "F" },
 };
 
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
-static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
+static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi,
+					int (*get_hw_id)(struct sr_scpi_dev_inst *scpi,
+							struct sr_scpi_hw_info **scpi_response)
+			   )
 {
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
@@ -67,7 +66,7 @@ static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
 	const char *vendor;
 	char ch_name[16];
 
-	if (sr_scpi_get_hw_id(scpi, &hw_info) != SR_OK) {
+	if (get_hw_id(scpi, &hw_info) != SR_OK) {
 		sr_info("Couldn't get IDN response.");
 		return NULL;
 	}
@@ -171,19 +170,80 @@ static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
 	return sdi;
 }
 
-static GSList *scan(struct sr_dev_driver *di, GSList *options)
+static gchar *hpib_get_revision(struct sr_scpi_dev_inst *scpi)
 {
-	return sr_scpi_scan(di->context, options, probe_device);
+	int ret;
+	gboolean matches;
+	char *response;
+	GRegex *version_regex;
+
+	ret = sr_scpi_get_string(scpi, "ROM?", &response);
+	if (ret != SR_OK && !response)
+		return NULL;
+
+	/* Example version string: "B01 B01" */
+	version_regex = g_regex_new("[A-Z][0-9]{2} [A-Z][0-9]{2}", 0, 0, NULL);
+	matches = g_regex_match(version_regex, response, 0, NULL);
+	g_regex_unref(version_regex);
+
+	if (!matches) {
+		/* Not a valid version string. Ignore it. */
+		g_free(response);
+		response = NULL;
+	} else {
+		/* Replace space with dot. */
+		response[3] = '.';
+	}
+
+	return response;
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
+/*
+ * This function assumes the response is in the form "HP<model_number>"
+ *
+ * HP made many GPIB (then called HP-IB) instruments before the SCPI command
+ * set was introduced into the standard. We haven't seen any non-HP instruments
+ * which respond to the "ID?" query, so assume all are HP for now.
+ */
+static int hpib_get_hw_id(struct sr_scpi_dev_inst *scpi,
+			  struct sr_scpi_hw_info **scpi_response)
 {
-	return ((struct drv_context *)(di->context))->instances;
+	int ret;
+	char *response;
+	struct sr_scpi_hw_info *hw_info;
+
+	ret = sr_scpi_get_string(scpi, "ID?", &response);
+	if ((ret != SR_OK) || !response)
+		return SR_ERR;
+
+	hw_info = g_malloc0(sizeof(struct sr_scpi_hw_info));
+
+	*scpi_response = hw_info;
+	hw_info->model = response;
+	hw_info->firmware_version = hpib_get_revision(scpi);
+	hw_info->manufacturer = g_strdup("HP");
+
+	return SR_OK;
 }
 
-static int dev_clear(const struct sr_dev_driver *di)
+static struct sr_dev_inst *probe_scpi_pps_device(struct sr_scpi_dev_inst *scpi)
 {
-	return std_dev_clear(di, NULL);
+	return probe_device(scpi, sr_scpi_get_hw_id);
+}
+
+static struct sr_dev_inst *probe_hpib_pps_device(struct sr_scpi_dev_inst *scpi)
+{
+	return probe_device(scpi, hpib_get_hw_id);
+}
+
+static GSList *scan_scpi_pps(struct sr_dev_driver *di, GSList *options)
+{
+	return sr_scpi_scan(di->context, options, probe_scpi_pps_device);
+}
+
+static GSList *scan_hpib_pps(struct sr_dev_driver *di, GSList *options)
+{
+	return sr_scpi_scan(di->context, options, probe_hpib_pps_device);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -203,7 +263,6 @@ static int dev_open(struct sr_dev_inst *sdi)
 
 	devc = sdi->priv;
 	scpi_cmd(sdi, devc->device->commands, SCPI_CMD_REMOTE);
-	devc = sdi->priv;
 	devc->beeper_was_set = FALSE;
 	if (scpi_cmd_resp(sdi, devc->device->commands, &beeper,
 			G_VARIANT_TYPE_BOOLEAN, SCPI_CMD_BEEPER) == SR_OK) {
@@ -248,7 +307,7 @@ static void clear_helper(void *priv)
 	g_free(devc);
 }
 
-static int cleanup(const struct sr_dev_driver *di)
+static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, clear_helper);
 }
@@ -576,7 +635,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return ret;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_scpi_dev_inst *scpi;
@@ -589,12 +648,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 
 	devc = sdi->priv;
 	scpi = sdi->conn;
-	devc->cb_data = cb_data;
 
 	if ((ret = sr_scpi_source_add(sdi->session, scpi, G_IO_IN, 10,
 			scpi_pps_receive_data, (void *)sdi)) != SR_OK)
 		return ret;
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Prime the pipe with the first channel's fetch. */
 	ch = sr_next_enabled_channel(sdi, NULL);
@@ -616,13 +674,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
 	struct sr_scpi_dev_inst *scpi;
 	float f;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -637,20 +692,19 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	sr_scpi_get_float(scpi, NULL, &f);
 	sr_scpi_source_remove(sdi->session, scpi);
 
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver scpi_pps_driver_info = {
+static struct sr_dev_driver scpi_pps_driver_info = {
 	.name = "scpi-pps",
 	.longname = "SCPI PPS",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
-	.scan = scan,
-	.dev_list = dev_list,
+	.init = std_init,
+	.cleanup = std_cleanup,
+	.scan = scan_scpi_pps,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -661,3 +715,24 @@ SR_PRIV struct sr_dev_driver scpi_pps_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+
+static struct sr_dev_driver hp_ib_pps_driver_info = {
+	.name = "hpib-pps",
+	.longname = "HP-IB PPS",
+	.api_version = 1,
+	.init = std_init,
+	.cleanup = std_cleanup,
+	.scan = scan_hpib_pps,
+	.dev_list = std_dev_list,
+	.dev_clear = dev_clear,
+	.config_get = config_get,
+	.config_set = config_set,
+	.config_list = config_list,
+	.dev_open = dev_open,
+	.dev_close = dev_close,
+	.dev_acquisition_start = dev_acquisition_start,
+	.dev_acquisition_stop = dev_acquisition_stop,
+	.context = NULL,
+};
+SR_REGISTER_DEV_DRIVER(scpi_pps_driver_info);
+SR_REGISTER_DEV_DRIVER(hp_ib_pps_driver_info);

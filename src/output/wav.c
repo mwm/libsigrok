@@ -36,6 +36,7 @@ struct out_context {
 	int chanbuf_size;
 	int *chanbuf_used;
 	uint8_t **chanbuf;
+	float *fdata;
 };
 
 static int realloc_chanbufs(const struct sr_output *o, int size)
@@ -236,7 +237,6 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 {
 	struct out_context *outc;
 	const struct sr_datafeed_meta *meta;
-	const struct sr_datafeed_analog_old *analog_old;
 	const struct sr_datafeed_analog *analog;
 	const struct sr_config *src;
 	struct sr_channel *ch;
@@ -261,7 +261,6 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 			outc->samplerate = g_variant_get_uint64(src->data);
 		}
 		break;
-	case SR_DF_ANALOG_OLD:
 	case SR_DF_ANALOG:
 		if (!outc->header_done) {
 			*out = gen_header(o);
@@ -269,23 +268,16 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 		} else
 			*out = g_string_sized_new(512);
 
-		analog_old = packet->payload;
 		analog = packet->payload;
-
-		if (packet->type == SR_DF_ANALOG_OLD) {
-			num_samples = analog_old->num_samples;
-			channels = analog_old->channels;
-			num_channels = g_slist_length(analog_old->channels);
-			data = analog_old->data;
-		} else {
-			num_samples = analog->num_samples;
-			channels = analog->meaning->channels;
-			num_channels = g_slist_length(analog->meaning->channels);
-			data = g_malloc(sizeof(float) * num_samples * num_channels);
-			ret = sr_analog_to_float(analog, data);
-			if (ret != SR_OK)
-				return ret;
-		}
+		num_samples = analog->num_samples;
+		channels = analog->meaning->channels;
+		num_channels = g_slist_length(analog->meaning->channels);
+		if (!(data = g_try_realloc(outc->fdata, sizeof(float) * num_samples * num_channels)))
+			return SR_ERR_MALLOC;
+		outc->fdata = data;
+		ret = sr_analog_to_float(analog, data);
+		if (ret != SR_OK)
+			return ret;
 
 		if (num_samples == 0)
 			return SR_OK;
@@ -297,7 +289,7 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 		}
 
 		if (num_samples > outc->chanbuf_size) {
-			if (realloc_chanbufs(o, analog_old->num_samples) != SR_OK)
+			if (realloc_chanbufs(o, analog->num_samples) != SR_OK)
 				return SR_ERR_MALLOC;
 		}
 
@@ -312,7 +304,7 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 			for (j = 0; j < num_channels; j++) {
 				idx = chan_idx[j];
 				buf = outc->chanbuf[idx] + outc->chanbuf_used[idx]++ * 4;
-				f = analog_old->data[i * num_channels + j];
+				f = data[i * num_channels + j];
 				if (outc->scale != 0.0)
 					f /= outc->scale;
 				float_to_le(buf, f);
@@ -338,23 +330,6 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 	return SR_OK;
 }
 
-static int cleanup(struct sr_output *o)
-{
-	struct out_context *outc;
-	int i;
-
-	outc = o->priv;
-	g_slist_free(outc->channels);
-	for (i = 0; i < outc->num_channels; i++)
-		g_free(outc->chanbuf[i]);
-	g_free(outc->chanbuf_used);
-	g_free(outc->chanbuf);
-	g_free(outc);
-	o->priv = NULL;
-
-	return SR_OK;
-}
-
 static struct sr_option options[] = {
 	{ "scale", "Scale", "Scale values by factor", NULL, NULL },
 	ALL_ZERO
@@ -366,6 +341,25 @@ static const struct sr_option *get_options(void)
 		options[0].def = g_variant_ref_sink(g_variant_new_double(0.0));
 
 	return options;
+}
+
+static int cleanup(struct sr_output *o)
+{
+	struct out_context *outc;
+	int i;
+
+	outc = o->priv;
+	g_slist_free(outc->channels);
+	g_variant_unref(options[0].def);
+	for (i = 0; i < outc->num_channels; i++)
+		g_free(outc->chanbuf[i]);
+	g_free(outc->chanbuf_used);
+	g_free(outc->chanbuf);
+	g_free(outc->fdata);
+	g_free(outc);
+	o->priv = NULL;
+
+	return SR_OK;
 }
 
 SR_PRIV struct sr_output_module output_wav = {

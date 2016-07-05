@@ -61,13 +61,6 @@ static const char *data_sources[] = {
 	"Memory",
 };
 
-SR_PRIV struct sr_dev_driver kecheng_kc_330b_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static int scan_kecheng(struct sr_dev_driver *di,
 		struct sr_usb_dev_inst *usb, char **model)
 {
@@ -119,7 +112,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	(void)options;
 
 	drvc = di->context;
-	drvc->instances = NULL;
 
 	devices = NULL;
 	if ((usb_devices = sr_usb_find(drvc->sr_ctx->libusb_ctx, USB_CONN))) {
@@ -132,7 +124,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			sdi->status = SR_ST_INACTIVE;
 			sdi->vendor = g_strdup(VENDOR);
 			sdi->model = model; /* Already g_strndup()'d. */
-			sdi->driver = di;
 			sdi->inst_type = SR_INST_USB;
 			sdi->conn = l->data;
 			sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "SPL");
@@ -150,32 +141,21 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 			/* TODO: Set date/time? */
 
-			drvc->instances = g_slist_append(drvc->instances, sdi);
 			devices = g_slist_append(devices, sdi);
 		}
 		g_slist_free(usb_devices);
 	} else
 		g_slist_free_full(usb_devices, g_free);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di = sdi->driver;
-	struct drv_context *drvc;
+	struct drv_context *drvc = di->context;
 	struct sr_usb_dev_inst *usb;
 	int ret;
-
-	if (!(drvc = di->context)) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	usb = sdi->conn;
 
@@ -198,14 +178,8 @@ static int dev_open(struct sr_dev_inst *sdi)
 
 static int dev_close(struct sr_dev_inst *sdi)
 {
-	struct sr_dev_driver *di = sdi->driver;
 	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
-
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	usb = sdi->conn;
 
@@ -225,21 +199,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	sdi->status = SR_ST_INACTIVE;
 
 	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	int ret;
-	struct drv_context *drvc;
-
-	if (!(drvc = di->context))
-		/* Can get called on an unused driver, doesn't matter. */
-		return SR_OK;
-
-	ret = std_dev_clear(di, NULL);
-	g_free(drvc);
-
-	return ret;
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -294,7 +253,6 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
-	struct sr_dev_driver *di = sdi->driver;
 	struct dev_context *devc;
 	uint64_t p, q;
 	unsigned int i;
@@ -305,11 +263,6 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
-
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	devc = sdi->priv;
 	ret = SR_OK;
@@ -413,8 +366,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di = sdi->driver;
 	struct drv_context *drvc;
@@ -435,11 +387,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	devc = sdi->priv;
 	usb = sdi->conn;
 
-	devc->cb_data = cb_data;
 	devc->num_samples = 0;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	if (devc->data_source == DATA_SOURCE_LIVE) {
 		/* Force configuration. */
@@ -462,8 +412,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 		devc->stored_samples = (buf[7] << 8) | buf[8];
 		if (devc->stored_samples == 0) {
 			/* Notify frontend of empty log by sending start/end packets. */
-			packet.type = SR_DF_END;
-			sr_session_send(cb_data, &packet);
+			std_session_send_df_end(sdi);
 			return SR_OK;
 		}
 
@@ -478,7 +427,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 		packet.type = SR_DF_META;
 		packet.payload = &meta;
 		meta.config = g_slist_append(NULL, src);
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 		g_free(src);
 	}
 
@@ -525,11 +474,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -551,14 +498,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver kecheng_kc_330b_driver_info = {
+static struct sr_dev_driver kecheng_kc_330b_driver_info = {
 	.name = "kecheng-kc-330b",
 	.longname = "Kecheng KC-330B",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -569,3 +516,4 @@ SR_PRIV struct sr_dev_driver kecheng_kc_330b_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(kecheng_kc_330b_driver_info);

@@ -30,7 +30,7 @@ index = ElementTree.parse(input_file)
 
 def get_text(node):
     paras = node.findall('para')
-    return str.join('\n\n', [p.text.rstrip() for p in paras if p.text])
+    return str.join('\n\n', [("".join(l)).rstrip() for l in [list(p.itertext()) for p in paras] if l])
 
 for compound in index.findall('compound'):
     if compound.attrib['kind'] != 'class':
@@ -45,6 +45,8 @@ for compound in index.findall('compound'):
     if brief:
         if language == 'python':
             print('%%feature("docstring") %s "%s";' % (class_name, brief))
+        elif language == 'ruby':
+            print('%%feature("docstring") %s "/* Document-class: %s\\n%s */\\n";' % (class_name, class_name.replace("sigrok", "Sigrok", 1), brief))
         elif language == 'java':
             print('%%typemap(javaclassmodifiers) %s "/** %s */\npublic class"' % (
             class_name, brief))
@@ -73,6 +75,12 @@ for compound in index.findall('compound'):
                             class_name, member_name, brief)] + [
                         '@param %s %s' % (name, desc)
                             for name, desc in parameters.items()]) + '";')
+                if language == 'ruby' and kind == 'public-func':
+                    print(str.join('\n', [
+                        '%%feature("docstring") %s::%s "/* %s' % (
+                            class_name, member_name, brief)] + [
+                        '@param %s %s' % (name, desc)
+                            for name, desc in parameters.items()]) + ' */\\n";')
                 elif language == 'java' and kind == 'public-func':
                         print(str.join('\n', [
                             '%%javamethodmodifiers %s::%s "/** %s' % (
@@ -101,3 +109,6 @@ for compound in index.findall('compound'):
                 print('%s.%s.__doc__ = """%s"""' % (
                     trimmed_name, member_name, brief))
             print('%}')
+    elif language == 'ruby' and constants:
+        for member_name, brief in constants:
+            print('%%feature("docstring") %s::%s "/* %s */\\n";' % (class_name, member_name, brief))

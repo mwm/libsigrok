@@ -50,49 +50,6 @@ static const uint64_t samplerates[] = {
 	SR_HZ(100),
 };
 
-SR_PRIV struct sr_dev_driver link_mso19_driver_info;
-
-/* TODO: Use sr_dev_inst to store connection handle & use std_dev_clear(). */
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	GSList *l;
-	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
-	struct dev_context *devc;
-	int ret = SR_OK;
-
-	if (!(drvc = di->context))
-		return SR_OK;
-
-	/* Properly close and free all devices. */
-	for (l = drvc->instances; l; l = l->next) {
-		if (!(sdi = l->data)) {
-			/* Log error, but continue cleaning up the rest. */
-			sr_err("%s: sdi was NULL, continuing", __func__);
-			ret = SR_ERR_BUG;
-			continue;
-		}
-		if (!(devc = sdi->priv)) {
-			/* Log error, but continue cleaning up the rest. */
-			sr_err("%s: sdi->priv was NULL, continuing", __func__);
-			ret = SR_ERR_BUG;
-			continue;
-		}
-		std_serial_dev_close(sdi);
-		sr_serial_dev_inst_free(devc->serial);
-		sr_dev_inst_free(sdi);
-	}
-	g_slist_free(drvc->instances);
-	drvc->instances = NULL;
-
-	return ret;
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	int i;
@@ -202,35 +159,15 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->vendor = g_strdup(manufacturer);
 		sdi->model = g_strdup(product);
 		sdi->version = g_strdup(hwrev);
-
-		if (!sdi) {
-			sr_err("Unable to create device instance for %s",
-			       sysname);
-			sr_dev_inst_free(sdi);
-			g_free(devc);
-			return devices;
-		}
-
-		sdi->driver = di;
 		sdi->priv = devc;
 
 		for (i = 0; i < ARRAY_SIZE(channel_names); i++) {
 			chtype = (i == 0) ? SR_CHANNEL_ANALOG : SR_CHANNEL_LOGIC;
 			sr_channel_new(sdi, i, chtype, TRUE, channel_names[i]);
 		}
-
-		//Add the driver
-		struct drv_context *drvc = di->context;
-		drvc->instances = g_slist_append(drvc->instances, sdi);
-		devices = g_slist_append(devices, sdi);
 	}
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -264,11 +201,6 @@ static int dev_open(struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear();
-}
-
 static int config_get(int key, GVariant **data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -276,13 +208,14 @@ static int config_get(int key, GVariant **data, const struct sr_dev_inst *sdi,
 
 	(void)cg;
 
+	if (!sdi)
+		return SR_ERR_ARG;
+
+	devc = sdi->priv;
+
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
-		if (sdi) {
-			devc = sdi->priv;
-			*data = g_variant_new_uint64(devc->cur_rate);
-		} else
-			return SR_ERR;
+		*data = g_variant_new_uint64(devc->cur_rate);
 		break;
 	default:
 		return SR_ERR_NA;
@@ -302,6 +235,7 @@ static int config_set(int key, GVariant *data, const struct sr_dev_inst *sdi,
 	double pos;
 
 	(void)cg;
+
 	devc = sdi->priv;
 
 	if (sdi->status != SR_ST_ACTIVE)
@@ -391,7 +325,7 @@ static int config_list(int key, GVariant **data, const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	int ret = SR_ERR;
@@ -446,37 +380,33 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	/* Reset trigger state. */
 	devc->trigger_state = 0x00;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Our first channel is analog, the other 8 are of type 'logic'. */
 	/* TODO. */
 
 	serial_source_add(sdi->session, devc->serial, G_IO_IN, -1,
-			mso_receive_data, cb_data);
+			mso_receive_data, sdi);
 
 	return SR_OK;
 }
 
 /* This stops acquisition on ALL devices, ignoring dev_index. */
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	(void)cb_data;
-
 	stop_acquisition(sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver link_mso19_driver_info = {
+static struct sr_dev_driver link_mso19_driver_info = {
 	.name = "link-mso19",
 	.longname = "Link Instruments MSO-19",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = dev_clear,
+	.dev_list = std_dev_list,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
@@ -486,3 +416,4 @@ SR_PRIV struct sr_dev_driver link_mso19_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(link_mso19_driver_info);

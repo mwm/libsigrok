@@ -70,36 +70,20 @@ static const struct hcs_model models[] = {
 	{ MANSON_HCS_3600, "HCS-3600-USB", "3600", { 1, 16, 0.1 }, { 0, 60,   0.10 } },
 	{ MANSON_HCS_3602, "HCS-3602-USB", "3602", { 1, 32, 0.1 }, { 0, 30,   0.10 } },
 	{ MANSON_HCS_3604, "HCS-3604-USB", "3604", { 1, 60, 0.1 }, { 0, 15,   0.10 } },
-	{ 0, NULL, NULL, { 0, 0, 0 }, { 0, 0, 0 }, },
+	ALL_ZERO
 };
-
-SR_PRIV struct sr_dev_driver manson_hcs_3xxx_driver_info;
-
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	int i, model_id;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
 	struct sr_config *src;
-	GSList *devices, *l;
+	GSList *l;
 	const char *conn, *serialcomm;
 	struct sr_serial_dev_inst *serial;
 	char reply[50], **tokens, *dummy;
 
-	drvc = di->context;
-	drvc->instances = NULL;
-	devices = NULL;
 	conn = NULL;
 	serialcomm = NULL;
 	devc = NULL;
@@ -159,11 +143,11 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->model = g_strdup(models[model_id].name);
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
-	sdi->driver = di;
 
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "CH1");
 
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 	devc->model = &models[model_id];
 
 	sdi->priv = devc;
@@ -189,30 +173,15 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	devc->voltage_max_device = g_strtod(tokens[0], &dummy) * devc->model->voltage[2];
 	g_strfreev(tokens);
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
-
 	serial_close(serial);
-	if (!devices)
-		sr_serial_dev_inst_free(serial);
 
-	return devices;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 
 exit_err:
 	sr_dev_inst_free(sdi);
 	g_free(devc);
 
 	return NULL;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -229,11 +198,8 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 
 	switch (key) {
 	case SR_CONF_LIMIT_SAMPLES:
-		*data = g_variant_new_uint64(devc->limit_samples);
-		break;
 	case SR_CONF_LIMIT_MSEC:
-		*data = g_variant_new_uint64(devc->limit_msec);
-		break;
+		return sr_sw_limits_config_get(&devc->limits, key, data);
 	case SR_CONF_VOLTAGE:
 		*data = g_variant_new_double(devc->voltage);
 		break;
@@ -272,15 +238,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	switch (key) {
 	case SR_CONF_LIMIT_MSEC:
-		if (g_variant_get_uint64(data) == 0)
-			return SR_ERR_ARG;
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_SAMPLES:
-		if (g_variant_get_uint64(data) == 0)
-			return SR_ERR_ARG;
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
+		return sr_sw_limits_config_set(&devc->limits, key, data);
 	case SR_CONF_VOLTAGE_TARGET:
 		dval = g_variant_get_double(data);
 		if (dval < devc->model->voltage[0] || dval > devc->voltage_max_device)
@@ -387,7 +345,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -396,13 +354,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR_DEV_CLOSED;
 
 	devc = sdi->priv;
-	devc->cb_data = cb_data;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->limits);
+	std_session_send_df_header(sdi);
 
-	devc->starttime = g_get_monotonic_time();
-	devc->num_samples = 0;
 	devc->reply_pending = FALSE;
 	devc->req_sent_at = 0;
 
@@ -414,27 +369,21 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data,
-			std_serial_dev_close, sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver manson_hcs_3xxx_driver_info = {
+static struct sr_dev_driver manson_hcs_3xxx_driver_info = {
 	.name = "manson-hcs-3xxx",
 	.longname = "Manson HCS-3xxx",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = dev_clear,
+	.dev_list = std_dev_list,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(manson_hcs_3xxx_driver_info);

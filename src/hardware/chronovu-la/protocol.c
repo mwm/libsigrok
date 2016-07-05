@@ -24,7 +24,7 @@
 SR_PRIV const struct cv_profile cv_profiles[] = {
 	{ CHRONOVU_LA8,  "LA8",  "ChronoVu LA8",  8,  SR_MHZ(100), 2, 0.8388608 },
 	{ CHRONOVU_LA16, "LA16", "ChronoVu LA16", 16, SR_MHZ(200), 4, 0.042 },
-	{ 0, NULL, NULL, 0, 0, 0, 0.0 },
+	ALL_ZERO
 };
 
 /* LA8: channels are numbered 0-7. LA16: channels are numbered 0-15. */
@@ -401,15 +401,18 @@ SR_PRIV int cv_read_block(struct dev_context *devc)
 	return SR_OK;
 }
 
-SR_PRIV void cv_send_block_to_session_bus(struct dev_context *devc, int block)
+SR_PRIV void cv_send_block_to_session_bus(const struct sr_dev_inst *sdi, int block)
 {
 	int i, idx;
 	uint8_t sample, expected_sample, tmp8;
 	struct sr_datafeed_packet packet;
 	struct sr_datafeed_logic logic;
 	int trigger_point; /* Relative trigger point (in this block). */
+	struct dev_context *devc;
 
 	/* Note: Caller ensures devc/devc->ftdic != NULL and block > 0. */
+
+	devc = sdi->priv;
 
 	/* TODO: Implement/test proper trigger support for the LA16. */
 
@@ -458,7 +461,7 @@ SR_PRIV void cv_send_block_to_session_bus(struct dev_context *devc, int block)
 		logic.length = BS;
 		logic.unitsize = devc->prof->num_channels / 8;
 		logic.data = devc->final_buf + (block * BS);
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 		return;
 	}
 
@@ -481,7 +484,7 @@ SR_PRIV void cv_send_block_to_session_bus(struct dev_context *devc, int block)
 		logic.length = trigger_point;
 		logic.unitsize = devc->prof->num_channels / 8;
 		logic.data = devc->final_buf + (block * BS);
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 	}
 
 	/* Send the SR_DF_TRIGGER packet to the session bus. */
@@ -489,7 +492,7 @@ SR_PRIV void cv_send_block_to_session_bus(struct dev_context *devc, int block)
 		(block * BS) + trigger_point);
 	packet.type = SR_DF_TRIGGER;
 	packet.payload = NULL;
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 
 	/* If at least one sample is located after the trigger... */
 	if (trigger_point < (BS - 1)) {
@@ -502,6 +505,6 @@ SR_PRIV void cv_send_block_to_session_bus(struct dev_context *devc, int block)
 		logic.length = BS - trigger_point;
 		logic.unitsize = devc->prof->num_channels / 8;
 		logic.data = devc->final_buf + (block * BS) + trigger_point;
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 	}
 }

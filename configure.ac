@@ -21,7 +21,7 @@
 # We require at least autoconf 2.63 (AC_INIT format changed there).
 AC_PREREQ([2.63])
 
-AC_INIT([libsigrok], [0.4.0],
+AC_INIT([libsigrok], [0.5.0],
 	[sigrok-devel@lists.sourceforge.net],
 	[libsigrok], [http://www.sigrok.org])
 AC_CONFIG_MACRO_DIR([m4])
@@ -67,7 +67,8 @@ SR_PKG_VERSION_SET([SR_PACKAGE_VERSION], [AC_PACKAGE_VERSION])
 # Carefully read the libtool docs before updating these numbers!
 # The algorithm for determining which number to change (and how) is nontrivial!
 # http://www.gnu.org/software/libtool/manual/libtool.html#Updating-version-info
-SR_LIB_VERSION_SET([SR_LIB_VERSION], [2:0:0])
+# Format: current:revision:age.
+SR_LIB_VERSION_SET([SR_LIB_VERSION], [3:0:0])
 
 AM_CONDITIONAL([WIN32], [test -z "${host_os##mingw*}" || test -z "${host_os##cygwin*}"])
 
@@ -91,6 +92,7 @@ SR_VAR_OPT_PKG([SR_PKGLIBS], [sr_deps_avail])
 SR_PKGLIBS_TESTS=
 SR_PKGLIBS_CXX=
 SR_PKGLIBS_PYTHON=
+SR_PKGLIBS_RUBY=
 SR_EXTRA_LIBS=
 
 SR_ARG_OPT_PKG([libserialport], [LIBSERIALPORT], [NEED_SERIAL],
@@ -169,6 +171,9 @@ AS_IF([test "x$sr_cv_have_rpc" = xyes],
 # VXI support is only compiled if RPC support was found.
 AM_CONDITIONAL([NEED_RPC], [test "x$sr_cv_have_rpc" = xyes])
 
+# Check for compiler support of 128 bit integers
+AC_CHECK_TYPES([__int128_t, __uint128_t], [], [], [])
+
 ########################
 ##  Hardware drivers  ##
 ########################
@@ -215,6 +220,7 @@ m4_define([SR_DRIVER],
 
 SR_DRIVER([Agilent DMM], [agilent-dmm], [libserialport])
 SR_DRIVER([Appa 55II], [appa-55ii], [libserialport])
+SR_DRIVER([Arachnid Labs Re:load Pro], [arachnid-labs-re-load-pro], [libserialport])
 SR_DRIVER([ASIX SIGMA/SIGMA2], [asix-sigma], [libftdi])
 SR_DRIVER([Atten PPS3xxx], [atten-pps3xxx], [libserialport])
 SR_DRIVER([BayLibre ACME], [baylibre-acme], [sys_timerfd_h])
@@ -229,24 +235,29 @@ SR_DRIVER([Conrad DIGI 35 CPU], [conrad-digi-35-cpu], [libserialport])
 SR_DRIVER([DER EE DE-5000], [deree-de5000], [libserialport])
 SR_DRIVER([demo], [demo])
 SR_DRIVER([Fluke DMM], [fluke-dmm], [libserialport])
+SR_DRIVER([FTDI LA], [ftdi-la], [libusb libftdi])
 SR_DRIVER([fx2lafw], [fx2lafw], [libusb])
 SR_DRIVER([GMC MH 1x/2x], [gmc-mh-1x-2x], [libserialport])
 SR_DRIVER([GW Instek GDS-800], [gwinstek-gds-800], [libserialport])
 SR_DRIVER([Hameg HMO], [hameg-hmo], [libserialport])
+SR_DRIVER([Hantek 6xxx], [hantek-6xxx], [libusb])
 SR_DRIVER([Hantek DSO], [hantek-dso], [libusb])
+SR_DRIVER([HP 3457A], [hp-3457a])
 SR_DRIVER([Hung-Chang DSO-2100], [hung-chang-dso-2100], [libieee1284])
 SR_DRIVER([Ikalogic Scanalogic-2], [ikalogic-scanalogic2], [libusb])
 SR_DRIVER([Ikalogic Scanaplus], [ikalogic-scanaplus], [libftdi])
 SR_DRIVER([Kecheng KC-330B], [kecheng-kc-330b], [libusb])
 SR_DRIVER([KERN scale], [kern-scale], [libserialport])
-SR_DRIVER([Korad KDxxxxP], [korad-kdxxxxp], [libserialport])
+SR_DRIVER([Korad KAxxxxP], [korad-kaxxxxp], [libserialport])
 SR_DRIVER([Lascar EL-USB], [lascar-el-usb], [libusb])
+SR_DRIVER([LeCroy LogicStudio], [lecroy-logicstudio], [libusb])
 SR_DRIVER([Manson HCS-3xxx], [manson-hcs-3xxx], [libserialport])
 SR_DRIVER([maynuo-m97], [maynuo-m97])
 SR_DRIVER([MIC 985xx], [mic-985xx], [libserialport])
 SR_DRIVER([Motech LPS 30x], [motech-lps-30x], [libserialport])
 SR_DRIVER([Norma DMM], [norma-dmm], [libserialport])
 SR_DRIVER([OpenBench Logic Sniffer], [openbench-logic-sniffer], [libserialport])
+SR_DRIVER([PCE PCE-322A], [pce-322a], [libserialport])
 SR_DRIVER([Pipistrello-OLS], [pipistrello-ols], [libftdi])
 SR_DRIVER([Rigol DS], [rigol-ds])
 SR_DRIVER([Saleae Logic16], [saleae-logic16], [libusb])
@@ -281,6 +292,10 @@ AC_ARG_ENABLE([python],
 	[AS_HELP_STRING([--enable-python], [build Python bindings [default=yes]])],
 	[], [enable_python=$enable_bindings])
 
+AC_ARG_ENABLE([ruby],
+	[AS_HELP_STRING([--enable-ruby], [build Ruby bindings [default=yes]])],
+	[], [enable_ruby=$enable_bindings])
+
 AC_ARG_ENABLE([java],
 	[AS_HELP_STRING([--enable-java], [build Java bindings [default=yes]])],
 	[], [enable_java=$enable_bindings])
@@ -292,7 +307,7 @@ AC_ARG_ENABLE([java],
 sr_cxx_missing=
 
 # Check if the C++ compiler supports the C++11 standard.
-AX_CXX_COMPILE_STDCXX_11([noext], [optional])
+AX_CXX_COMPILE_STDCXX([11], [noext], [optional])
 AS_IF([test "x$HAVE_CXX11" != x1],
 	[SR_APPEND([sr_cxx_missing], [', '], ['C++11'])])
 
@@ -378,12 +393,58 @@ AS_IF([test "x$HAVE_PYMOD_NUMPY" != xyes],
 
 # The Python bindings use SWIG to generate code.
 AC_CHECK_PROGS([SWIG], [swig swig3.0 swig2.0])
+AS_IF([test "x$SWIG" != x],
+    AC_MSG_CHECKING([for $SWIG version])
+    [SWIG_VERSION=`$SWIG -version 2>&1 | sed -n 's/SWIG Version //p'`]
+    AC_MSG_RESULT([$SWIG_VERSION]))
 AS_IF([test "x$SWIG" = x],
 	[SR_APPEND([sr_python_missing], [', '], [SWIG])])
 
 AS_IF([test -z "$sr_python_missing"],
 	[BINDINGS_PYTHON=$enable_python], [BINDINGS_PYTHON=no])
 AM_CONDITIONAL([BINDINGS_PYTHON], [test "x$BINDINGS_PYTHON" = xyes])
+
+#####################
+##  Ruby bindings  ##
+#####################
+
+AS_IF([test "x$BINDINGS_CXX" = xyes],
+	[sr_ruby_missing=],
+	[sr_ruby_missing='C++ bindings'])
+
+AC_PATH_PROGS(RUBY, ["${RUBY-ruby}"], [])
+AS_IF([test "x$RUBY" != x],
+	AC_MSG_CHECKING([for Ruby version])
+    [RUBY_VERSION=`$RUBY -e 'puts RUBY_VERSION'`]
+    AC_MSG_RESULT([$RUBY_VERSION])
+    [RUBY_DLEXT=`$RUBY -rrbconfig -e 'puts RbConfig::CONFIG[["DLEXT"]]'`]
+    AC_SUBST(RUBY_DLEXT))
+
+AS_IF([test "x$RUBY" = x],
+	[SR_APPEND([sr_ruby_missing], [', '], [Ruby])])
+
+# Extract major and minor version number of the Ruby interpreter.
+sr_rbmajor=${RUBY_VERSION%%.*}
+sr_rbminor=${RUBY_VERSION#*.}
+sr_rbminor=${sr_rbminor%%.*}
+
+# The Ruby bindings need Ruby development files.
+SR_PKG_CHECK([ruby_dev], [SR_PKGLIBS_RUBY],
+	[ruby],
+	[ruby-$sr_rbmajor.$sr_rbminor])
+
+AS_IF([test "x$sr_have_ruby_dev" != xyes],
+	[SR_APPEND([sr_ruby_missing], [', '], [Headers])])
+
+# The Ruby bindings use SWIG >= 3.0.8 to generate code.
+AS_IF([test "x$SWIG" = x],
+	[SR_APPEND([sr_ruby_missing], [', '], [SWIG])],
+	[AS_VERSION_COMPARE($SWIG_VERSION, "3.0.8",
+		[SR_APPEND([sr_ruby_missing], [', '], ['SWIG >= 3.0.8'])])])
+
+AS_IF([test -z "$sr_ruby_missing"],
+	[BINDINGS_RUBY=$enable_ruby], [BINDINGS_RUBY=no])
+AM_CONDITIONAL([BINDINGS_RUBY], [test "x$BINDINGS_RUBY" = xyes])
 
 ####################
 ##  Java bindings ##
@@ -453,6 +514,7 @@ PKG_CHECK_MODULES([TESTS], [$SR_PKGLIBS_TESTS glib-2.0 $SR_PKGLIBS])
 AM_COND_IF([BINDINGS_CXX], [
 	PKG_CHECK_MODULES([LIBSIGROKCXX], [$SR_PKGLIBS_CXX])
 	PKG_CHECK_MODULES([PYSIGROK], [$SR_PKGLIBS_PYTHON $SR_PKGLIBS_CXX])
+	PKG_CHECK_MODULES([RBSIGROK], [$SR_PKGLIBS_RUBY $SR_PKGLIBS_CXX], [AC_SUBST(RBSIGROK_EXTDIR, "lib/$($PKG_CONFIG --variable=sitearch $SR_PKGLIBS_RUBY)/$($PKG_CONFIG --variable=RUBY_BASE_NAME $SR_PKGLIBS_RUBY)/vendor_ruby/$($PKG_CONFIG --variable=ruby_version $SR_PKGLIBS_RUBY)")])
 ])
 
 # Check for specific libusb features, now that we know the CFLAGS.
@@ -489,7 +551,7 @@ m4_define([SR_PREPARE_BINDING_REPORT], [
 	test -z "$sr_$1_missing" || sr_report_$1=" (missing: $sr_$1_missing)"
 	test "x$enable_$1" = xyes || sr_report_$1=' (disabled)'
 ])
-m4_map_args([SR_PREPARE_BINDING_REPORT], [cxx], [python], [java])
+m4_map_args([SR_PREPARE_BINDING_REPORT], [cxx], [python], [ruby], [java])
 
 cat >&AS_MESSAGE_FD <<_EOF
 
@@ -530,6 +592,7 @@ Enabled SCPI backends:
 Enabled language bindings:
  - C++............................. $BINDINGS_CXX$sr_report_cxx
  - Python.......................... $BINDINGS_PYTHON$sr_report_python
+ - Ruby............................ $BINDINGS_RUBY$sr_report_ruby
  - Java............................ $BINDINGS_JAVA$sr_report_java
 
 _EOF

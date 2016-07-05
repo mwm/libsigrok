@@ -45,6 +45,9 @@ struct session_vdev {
 	uint64_t samplerate;
 	int unitsize;
 	int num_channels;
+	int num_analog_channels;
+	int cur_analog_channel;
+	GArray *analog_channels;
 	int cur_chunk;
 	gboolean finished;
 };
@@ -53,6 +56,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_CAPTUREFILE | SR_CONF_SET,
 	SR_CONF_CAPTURE_UNITSIZE | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_NUM_LOGIC_CHANNELS | SR_CONF_SET,
+	SR_CONF_NUM_ANALOG_CHANNELS | SR_CONF_SET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_SESSIONFILE | SR_CONF_SET,
 };
@@ -62,6 +66,10 @@ static gboolean stream_session_data(struct sr_dev_inst *sdi)
 	struct session_vdev *vdev;
 	struct sr_datafeed_packet packet;
 	struct sr_datafeed_logic logic;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct zip_stat zs;
 	int ret, got_data;
 	char capturefile[16];
@@ -69,10 +77,11 @@ static gboolean stream_session_data(struct sr_dev_inst *sdi)
 
 	got_data = FALSE;
 	vdev = sdi->priv;
+
 	if (!vdev->capfile) {
 		/* No capture file opened yet, or finished with the last
 		 * chunked one. */
-		if (vdev->cur_chunk == 0) {
+		if (vdev->capturefile && (vdev->cur_chunk == 0)) {
 			/* capturefile is always the unchunked base name. */
 			if (zip_stat(vdev->archive, vdev->capturefile, 0, &zs) != -1) {
 				/* No chunks, just a single capture file. */
@@ -106,6 +115,12 @@ static gboolean stream_session_data(struct sr_dev_inst *sdi)
 						capturefile, 0)))
 					return FALSE;
 				sr_dbg("Opened %s.", capturefile);
+			} else if (vdev->cur_analog_channel < vdev->num_analog_channels) {
+				vdev->capturefile = g_strdup_printf("analog-1-%d",
+						vdev->num_channels + vdev->cur_analog_channel + 1);
+				vdev->cur_analog_channel++;
+				vdev->cur_chunk = 0;
+				return TRUE;
 			} else {
 				/* We got all the chunks, finish up. */
 				return FALSE;
@@ -115,18 +130,37 @@ static gboolean stream_session_data(struct sr_dev_inst *sdi)
 
 	buf = g_malloc(CHUNKSIZE);
 
-	ret = zip_fread(vdev->capfile, buf,
-			CHUNKSIZE / vdev->unitsize * vdev->unitsize);
+	/* unitsize is not defined for purely analog session files. */
+	if (vdev->unitsize)
+		ret = zip_fread(vdev->capfile, buf,
+				CHUNKSIZE / vdev->unitsize * vdev->unitsize);
+	else
+		ret = zip_fread(vdev->capfile, buf, CHUNKSIZE);
+
 	if (ret > 0) {
-		if (ret % vdev->unitsize != 0)
-			sr_warn("Read size %d not a multiple of the"
-				" unit size %d.", ret, vdev->unitsize);
 		got_data = TRUE;
-		packet.type = SR_DF_LOGIC;
-		packet.payload = &logic;
-		logic.length = ret;
-		logic.unitsize = vdev->unitsize;
-		logic.data = buf;
+		if (vdev->cur_analog_channel != 0) {
+			packet.type = SR_DF_ANALOG;
+			packet.payload = &analog;
+			sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+			analog.meaning->channels = g_slist_prepend(NULL,
+					g_array_index(vdev->analog_channels,
+						struct sr_channel *, vdev->cur_analog_channel - 1));
+			analog.num_samples = ret / sizeof(float);
+			analog.meaning->mq = SR_MQ_VOLTAGE;
+			analog.meaning->unit = SR_UNIT_VOLT;
+			analog.meaning->mqflags = SR_MQFLAG_DC;
+			analog.data = (float *) buf;
+		} else {
+			if (ret % vdev->unitsize != 0)
+				sr_warn("Read size %d not a multiple of the"
+					" unit size %d.", ret, vdev->unitsize);
+			packet.type = SR_DF_LOGIC;
+			packet.payload = &logic;
+			logic.length = ret;
+			logic.unitsize = vdev->unitsize;
+			logic.data = buf;
+		}
 		vdev->bytes_read += ret;
 		sr_session_send(sdi, &packet);
 	} else {
@@ -148,7 +182,6 @@ static int receive_data(int fd, int revents, void *cb_data)
 {
 	struct sr_dev_inst *sdi;
 	struct session_vdev *vdev;
-	struct sr_datafeed_packet packet;
 
 	(void)fd;
 	(void)revents;
@@ -169,19 +202,13 @@ static int receive_data(int fd, int revents, void *cb_data)
 		zip_discard(vdev->archive);
 		vdev->archive = NULL;
 	}
-	packet.type = SR_DF_END;
-	packet.payload = NULL;
-	sr_session_send(sdi, &packet);
+
+	std_session_send_df_end(sdi);
 
 	return G_SOURCE_REMOVE;
 }
 
 /* driver callbacks */
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static int dev_clear(const struct sr_dev_driver *di)
 {
@@ -280,6 +307,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	case SR_CONF_NUM_LOGIC_CHANNELS:
 		vdev->num_channels = g_variant_get_int32(data);
 		break;
+	case SR_CONF_NUM_ANALOG_CHANNELS:
+		vdev->num_analog_channels = g_variant_get_int32(data);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -305,15 +335,23 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct session_vdev *vdev;
 	int ret;
-
-	(void)cb_data;
+	GSList *l;
+	struct sr_channel *ch;
 
 	vdev = sdi->priv;
 	vdev->bytes_read = 0;
+	vdev->cur_analog_channel = 0;
+	vdev->analog_channels = g_array_sized_new(FALSE, FALSE,
+			sizeof(struct sr_channel *), vdev->num_analog_channels);
+	for (l = sdi->channels; l; l = l->next) {
+		ch = l->data;
+		if (ch->type == SR_CHANNEL_ANALOG)
+			g_array_append_val(vdev->analog_channels, ch);
+	}
 	vdev->cur_chunk = 0;
 	vdev->finished = FALSE;
 
@@ -326,8 +364,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR;
 	}
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* freewheeling source */
 	sr_session_source_add(sdi->session, -1, 0, 0, receive_data, (void *)sdi);
@@ -335,11 +372,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct session_vdev *vdev;
 
-	(void)cb_data;
 	vdev = sdi->priv;
 
 	vdev->finished = TRUE;
@@ -352,7 +388,7 @@ SR_PRIV struct sr_dev_driver session_driver = {
 	.name = "virtual-session",
 	.longname = "Session-emulating driver",
 	.api_version = 1,
-	.init = init,
+	.init = std_init,
 	.cleanup = dev_clear,
 	.scan = NULL,
 	.dev_list = NULL,

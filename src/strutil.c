@@ -58,8 +58,6 @@
  *
  * @retval SR_OK Conversion successful.
  * @retval SR_ERR Failure.
- *
- * @since 0.3.0
  */
 SR_PRIV int sr_atol(const char *str, long *ret)
 {
@@ -92,8 +90,6 @@ SR_PRIV int sr_atol(const char *str, long *ret)
  *
  * @retval SR_OK Conversion successful.
  * @retval SR_ERR Failure.
- *
- * @since 0.3.0
  */
 SR_PRIV int sr_atoi(const char *str, int *ret)
 {
@@ -124,8 +120,6 @@ SR_PRIV int sr_atoi(const char *str, int *ret)
  *
  * @retval SR_OK Conversion successful.
  * @retval SR_ERR Failure.
- *
- * @since 0.3.0
  */
 SR_PRIV int sr_atod(const char *str, double *ret)
 {
@@ -158,8 +152,6 @@ SR_PRIV int sr_atod(const char *str, double *ret)
  *
  * @retval SR_OK Conversion successful.
  * @retval SR_ERR Failure.
- *
- * @since 0.3.0
  */
 SR_PRIV int sr_atof(const char *str, float *ret)
 {
@@ -190,8 +182,6 @@ SR_PRIV int sr_atof(const char *str, float *ret)
  *
  * @retval SR_OK Conversion successful.
  * @retval SR_ERR Failure.
- *
- * @since 0.3.0
  */
 SR_PRIV int sr_atof_ascii(const char *str, float *ret)
 {
@@ -218,6 +208,77 @@ SR_PRIV int sr_atof_ascii(const char *str, float *ret)
 	*/
 
 	*ret = (float) tmp;
+	return SR_OK;
+}
+
+/**
+ * Convert a string representation of a numeric value to a @sr_rational. The
+ * conversion is strict and will fail if the complete string does not represent
+ * a valid number. The function sets errno according to the details of the
+ * failure. This version ignores the locale.
+ *
+ * @param str The string representation to convert.
+ * @param ret Pointer to sr_rational where the result of the conversion will be stored.
+ *
+ * @retval SR_OK Conversion successful.
+ * @retval SR_ERR Failure.
+ *
+ * @since 0.5.0
+ */
+SR_API int sr_parse_rational(const char *str, struct sr_rational *ret)
+{
+	char *endptr = NULL;
+	int64_t integral;
+	int64_t fractional = 0;
+	int64_t denominator = 1;
+	int32_t fractional_len = 0;
+	int32_t exponent = 0;
+
+	errno = 0;
+	integral = g_ascii_strtoll(str, &endptr, 10);
+
+	if (errno)
+		return SR_ERR;
+
+	if (*endptr == '.') {
+		const char* start = endptr + 1;
+		fractional = g_ascii_strtoll(start, &endptr, 10);
+		if (errno)
+			return SR_ERR;
+		fractional_len = endptr - start;
+	}
+
+	if ((*endptr == 'E') || (*endptr == 'e')) {
+		exponent = g_ascii_strtoll(endptr + 1, &endptr, 10);
+		if (errno)
+			return SR_ERR;
+	}
+
+	if (*endptr != '\0')
+		return SR_ERR;
+
+	for (int i = 0; i < fractional_len; i++)
+		integral *= 10;
+	exponent -= fractional_len;
+
+	if (integral >= 0)
+		integral += fractional;
+	else
+		integral -= fractional;
+
+	while (exponent > 0) {
+		integral *= 10;
+		exponent--;
+	}
+
+	while (exponent < 0) {
+		denominator *= 10;
+		exponent++;
+	}
+
+	ret->p = integral;
+	ret->q = denominator;
+
 	return SR_OK;
 }
 

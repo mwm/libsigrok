@@ -36,16 +36,8 @@ static const uint32_t devopts[] = {
 	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
 };
 
-SR_PRIV struct sr_dev_driver teleinfo_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	struct sr_dev_inst *sdi;
@@ -80,8 +72,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	sr_info("Probing serial port %s.", conn);
 
-	drvc = di->context;
-	drvc->instances = NULL;
 	serial_flush(serial);
 
 	/* Let's get a bit of data and see if we can find a packet. */
@@ -100,7 +90,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 	sdi->priv = devc;
-	sdi->driver = di;
 
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P");
 
@@ -124,23 +113,12 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "IINST");
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "PAPP");
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 	devices = g_slist_append(devices, sdi);
 
 scan_cleanup:
 	serial_close(serial);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
+	return std_scan_complete(di, devices);
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -153,23 +131,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->sw_limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -194,7 +158,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_serial_dev_inst *serial = sdi->conn;
 	struct dev_context *devc;
@@ -202,23 +166,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	devc->session_cb_data = cb_data;
+	sr_sw_limits_acquisition_start(&devc->sw_limits);
 
-	/*
-	 * Reset the number of samples to take. If we've already collected our
-	 * quota, but we start a new session, and don't reset this, we'll just
-	 * quit without acquiring any new samples.
-	 */
-	devc->num_samples = 0;
-	devc->start_time = g_get_monotonic_time();
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Poll every 50ms, or whenever some data comes in. */
 	serial_source_add(sdi->session, serial, G_IO_IN, 50,
@@ -227,20 +179,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data,
-			std_serial_dev_close, sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver teleinfo_driver_info = {
+static struct sr_dev_driver teleinfo_driver_info = {
 	.name = "teleinfo",
 	.longname = "Teleinfo",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
@@ -248,6 +194,7 @@ SR_PRIV struct sr_dev_driver teleinfo_driver_info = {
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(teleinfo_driver_info);

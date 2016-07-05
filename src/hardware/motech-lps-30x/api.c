@@ -28,9 +28,6 @@
 #include <math.h>
 #include <string.h>
 #include "protocol.h"
-
-/* Forward declarations */
-SR_PRIV struct sr_dev_driver motech_lps_301_driver_info;
 SR_PRIV int lps_read_reply(struct sr_serial_dev_inst *serial, char **buf, int *buflen);
 SR_PRIV int lps_send_va(struct sr_serial_dev_inst *serial, const char *fmt, va_list args);
 SR_PRIV int lps_cmd_ok(struct sr_serial_dev_inst *serial, const char *fmt, ...);
@@ -132,11 +129,6 @@ static const struct lps_modelspec models[] = {
 		},
 	},
 };
-
-static int init_lps301(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 /** Send command to device with va_list.
  */
@@ -242,7 +234,7 @@ SR_PRIV int lps_process_status(struct sr_dev_inst *sdi, int stat)
 	struct dev_context *devc;
 	int tracking_mode;
 
-	devc = (struct dev_context *)sdi->priv;
+	devc = sdi->priv;
 
 	sr_spew("Status: %d", stat);
 	devc->channel_status[0].cc_mode = (stat & 0x01) != 0;
@@ -289,7 +281,7 @@ SR_PRIV int lps_query_status(struct sr_dev_inst *sdi)
 	int stat, ret;
 	struct dev_context *devc;
 
-	devc = (struct dev_context *)sdi->priv;
+	devc = sdi->priv;
 
 	devc->req_sent_at = g_get_real_time();
 
@@ -374,12 +366,10 @@ SR_PRIV int lps_read_reply(struct sr_serial_dev_inst *serial, char **buf, int *b
 static GSList *do_scan(lps_modelid modelid, struct sr_dev_driver *drv, GSList *options)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	struct sr_channel *ch;
 	struct sr_channel_group *cg;
-	GSList *devices;
 	const char *conn, *serialcomm;
 	int cnt, ret;
 	gchar buf[LINELEN_MAX];
@@ -389,10 +379,6 @@ static GSList *do_scan(lps_modelid modelid, struct sr_dev_driver *drv, GSList *o
 	sdi = NULL;
 	devc = NULL;
 	conn = serialcomm = NULL;
-	devices = NULL;
-
-	drvc = drv->context;
-	drvc->instances = NULL;
 
 	sr_spew("scan() called!");
 
@@ -455,16 +441,12 @@ static GSList *do_scan(lps_modelid modelid, struct sr_dev_driver *drv, GSList *o
 	sdi->vendor = g_strdup(VENDOR_MOTECH);
 	sdi->model = g_strdup(models[modelid].modelstr);
 	sdi->version = g_strdup(verstr);
-	sdi->driver = drv;
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 	devc->model = &models[modelid];
-	devc->limit_samples = 0;
-	devc->limit_msec = 0;
-	devc->num_samples = 0;
-	devc->elapsed_msec = g_timer_new();
 
 	sdi->priv = devc;
 
@@ -484,18 +466,13 @@ static GSList *do_scan(lps_modelid modelid, struct sr_dev_driver *drv, GSList *o
 		sdi->channel_groups = g_slist_append(sdi->channel_groups, cg);
 	}
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
-
 	/* Query status */
 	if (lps_query_status(sdi) != SR_OK)
 		goto exit_err;
 
 	serial_close(serial);
-	if (!devices)
-		sr_serial_dev_inst_free(serial);
 
-	return devices;
+	return std_scan_complete(drv, g_slist_append(NULL, sdi));
 
 exit_err:
 	sr_info("%s: Error!", __func__);
@@ -517,11 +494,6 @@ static GSList *scan_lps301(struct sr_dev_driver *di, GSList *options)
 	return do_scan(LPS_301, di, options);
 }
 
-static GSList *dev_list_lps301(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
 static void dev_clear_private(struct dev_context *devc)
 {
 	int ch_idx;
@@ -529,18 +501,11 @@ static void dev_clear_private(struct dev_context *devc)
 	/* Free channel_status.info (list only, data owned by sdi). */
 	for (ch_idx = 0; ch_idx < devc->model->num_channels; ch_idx++)
 		g_slist_free(devc->channel_status[ch_idx].info);
-
-	g_timer_destroy(devc->elapsed_msec);
 }
 
 static int dev_clear_lps301(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, (std_dev_clear_callback)dev_clear_private);
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear_lps301(di);
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -559,11 +524,8 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		/* No channel group: global options. */
 		switch (key) {
 		case SR_CONF_LIMIT_SAMPLES:
-			*data = g_variant_new_uint64(devc->limit_samples);
-			break;
 		case SR_CONF_LIMIT_MSEC:
-			*data = g_variant_new_uint64(devc->limit_msec);
-			break;
+			return sr_sw_limits_config_get(&devc->limits, key, data);
 		case SR_CONF_CHANNEL_CONFIG:
 			*data = g_variant_new_string(channel_modes[devc->tracking_mode]);
 			break;
@@ -624,11 +586,8 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		/* No channel group: global options. */
 		switch (key) {
 		case SR_CONF_LIMIT_MSEC:
-			devc->limit_msec = g_variant_get_uint64(data);
-			break;
 		case SR_CONF_LIMIT_SAMPLES:
-			devc->limit_samples = g_variant_get_uint64(data);
-			break;
+			return sr_sw_limits_config_set(&devc->limits, key, data);
 		case SR_CONF_CHANNEL_CONFIG:
 			sval = g_variant_get_string(data, NULL);
 			found = FALSE;
@@ -726,7 +685,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 			scanopts, ARRAY_SIZE(scanopts), sizeof(uint32_t));
 		return SR_OK;
 	case SR_CONF_DEVICE_OPTIONS:
-		if (sdi != NULL)
+		if (sdi)
 			break;
 		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
 			drvopts, ARRAY_SIZE(drvopts), sizeof(uint32_t));
@@ -796,7 +755,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -811,11 +770,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	serial = sdi->conn;
 	serial_source_add(sdi->session, serial, G_IO_IN, 50,
 			motech_lps_30x_receive_data, (void *)sdi);
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
-	/* Start timer, if required. */
-	if (devc->limit_msec)
-		g_timer_start(devc->elapsed_msec);
+	sr_sw_limits_acquisition_start(&devc->limits);
 
 	devc->acq_req = AQ_NONE;
 	/* Do not start polling device here, the read function will do it in 50 ms. */
@@ -823,26 +780,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	struct dev_context *devc;
-
-	/* Stop timer, if required. */
-	if (sdi && (devc = sdi->priv) && devc->limit_msec)
-		g_timer_stop(devc->elapsed_msec);
-
-	return std_serial_dev_acquisition_stop(sdi, cb_data, std_serial_dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver motech_lps_301_driver_info = {
+static struct sr_dev_driver motech_lps_301_driver_info = {
 	.name = "motech-lps-301",
 	.longname = "Motech LPS-301",
 	.api_version = 1,
-	.init = init_lps301,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan_lps301,
-	.dev_list = dev_list_lps301,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear_lps301,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -850,6 +795,7 @@ SR_PRIV struct sr_dev_driver motech_lps_301_driver_info = {
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(motech_lps_301_driver_info);

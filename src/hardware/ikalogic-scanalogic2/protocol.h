@@ -147,8 +147,6 @@ struct dev_context {
 	/* Time that the trigger will be delayed in milliseconds. */
 	uint16_t after_trigger_delay;
 
-	void *cb_data;
-
 	/* Array to provide an index based access to all channels. */
 	const struct sr_channel *channels[NUM_CHANNELS];
 
@@ -229,8 +227,8 @@ SR_PRIV int sl2_set_capture_ratio(const struct sr_dev_inst *sdi,
 SR_PRIV int sl2_set_after_trigger_delay(const struct sr_dev_inst *sdi,
 					uint64_t after_trigger_delay);
 SR_PRIV void sl2_calculate_trigger_samples(const struct sr_dev_inst *sdi);
-SR_PRIV int sl2_get_device_info(struct sr_usb_dev_inst usb,
-		struct device_info *dev_info);
+SR_PRIV int sl2_get_device_info(struct sr_dev_driver *di,
+		struct sr_usb_dev_inst usb, struct device_info *dev_info);
 SR_PRIV int sl2_transfer_in(libusb_device_handle *dev_handle, uint8_t *data);
 SR_PRIV int sl2_transfer_out(libusb_device_handle *dev_handle, uint8_t *data);
 

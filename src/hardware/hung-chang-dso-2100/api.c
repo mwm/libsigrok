@@ -22,8 +22,6 @@
 #include <string.h>
 #include "protocol.h"
 
-SR_PRIV struct sr_dev_driver hung_chang_dso_2100_driver_info;
-
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -104,19 +102,12 @@ static const uint8_t coupling_map[] = {
 	0x00, 0x08, 0x04
 };
 
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
-static GSList *scan_port(GSList *devices, struct sr_dev_driver *di,
-			 struct parport *port)
+static GSList *scan_port(GSList *devices, struct parport *port)
 {
 	struct sr_dev_inst *sdi;
 	struct sr_channel *ch;
 	struct sr_channel_group *cg;
 	struct dev_context *devc;
-	struct drv_context *drvc;
 	int i;
 
 	if (ieee1284_open(port, 0, &i) != E1284_OK) {
@@ -142,8 +133,6 @@ static GSList *scan_port(GSList *devices, struct sr_dev_driver *di,
 	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup("Hung-Chang");
 	sdi->model = g_strdup("DSO-2100");
-	sdi->driver = di;
-	drvc = di->context;
 	sdi->inst_type = 0; /* FIXME */
 	sdi->conn = port;
 	ieee1284_ref(port);
@@ -176,7 +165,6 @@ static GSList *scan_port(GSList *devices, struct sr_dev_driver *di,
 	devc->last_step = 0; /* buffersize = 1000 */
 	sdi->priv = devc;
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 	devices = g_slist_append(devices, sdi);
 
 fail3:
@@ -216,7 +204,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	for (i = 0; i < ports.portc; i++)
 		if (!strcmp(ports.portv[i]->name, conn)) {
 			port_found = TRUE;
-			devices = scan_port(devices, di, ports.portv[i]);
+			devices = scan_port(devices, ports.portv[i]);
 		}
 
 	if (!port_found) {
@@ -227,12 +215,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	ieee1284_free_ports(&ports);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static void clear_private(void *priv)
@@ -309,18 +292,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	sdi->status = SR_ST_INACTIVE;
 
 	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	struct drv_context *drvc = di->context;
-	int ret;
-
-	ret = dev_clear(di);
-
-	g_free(drvc);
-
-	return ret;
 }
 
 static int find_in_array(GVariant *data, const GVariantType *type,
@@ -686,8 +657,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc = sdi->priv;
 	int ret;
@@ -703,7 +673,6 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 		devc->factor /= relays[(devc->cctl[devc->channel - 1] >> 4) & 0x03];
 	}
 	devc->frame = 0;
-	devc->cb_data = cb_data;
 	devc->state_known = TRUE;
 	devc->step = 0;
 	devc->adc2 = FALSE;
@@ -713,43 +682,39 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	if (ret != SR_OK)
 		return ret;
 
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
-	sr_session_source_add(sdi->session, 0, 0, 8,
+	sr_session_source_add(sdi->session, -1, 0, 8,
 			      hung_chang_dso_2100_poll, (void *)sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV int hung_chang_dso_2100_dev_acquisition_stop(const struct sr_dev_inst *sdi,
-		void *cb_data)
+SR_PRIV int hung_chang_dso_2100_dev_acquisition_stop(const struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet = { .type = SR_DF_END };
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	sr_session_send(cb_data, &packet);
-	sr_session_source_remove(sdi->session, 0);
-
+	std_session_send_df_end(sdi);
+	sr_session_source_remove(sdi->session, -1);
 	hung_chang_dso_2100_move_to(sdi, 1);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	return hung_chang_dso_2100_dev_acquisition_stop(sdi, cb_data);
+	return hung_chang_dso_2100_dev_acquisition_stop(sdi);
 }
 
-SR_PRIV struct sr_dev_driver hung_chang_dso_2100_driver_info = {
+static struct sr_dev_driver hung_chang_dso_2100_driver_info = {
 	.name = "hung-chang-dso-2100",
 	.longname = "Hung-Chang DSO-2100",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -762,3 +727,4 @@ SR_PRIV struct sr_dev_driver hung_chang_dso_2100_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(hung_chang_dso_2100_driver_info);

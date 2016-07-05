@@ -66,7 +66,10 @@ static void process_mset(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	GString *dbg;
 	float fvalue;
 	int i;
@@ -131,21 +134,20 @@ static void process_mset(const struct sr_dev_inst *sdi)
 				break;
 			}
 		}
-		memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-		analog.mq = SR_MQ_SOUND_PRESSURE_LEVEL;
-		analog.mqflags = devc->cur_mqflags;
-		analog.unit = SR_UNIT_DECIBEL_SPL;
-		analog.channels = sdi->channels;
+		sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+		analog.meaning->mq = SR_MQ_SOUND_PRESSURE_LEVEL;
+		analog.meaning->mqflags = devc->cur_mqflags;
+		analog.meaning->unit = SR_UNIT_DECIBEL_SPL;
+		analog.meaning->channels = sdi->channels;
 		analog.num_samples = 1;
 		analog.data = &devc->last_spl;
-		packet.type = SR_DF_ANALOG_OLD;
+		packet.type = SR_DF_ANALOG;
 		packet.payload = &analog;
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 
 		devc->num_samples++;
 		if (devc->limit_samples && devc->num_samples >= devc->limit_samples)
-			sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-					devc->cb_data);
+			sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi);
 		break;
 	case TOKEN_RECORDING_ON:
 		devc->recording = TRUE;
@@ -178,33 +180,35 @@ static void send_data(const struct sr_dev_inst *sdi, unsigned char *data,
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	float fbuf[SAMPLES_PER_PACKET];
 	unsigned int i;
 
 	devc = sdi->priv;
 
-	for (i = 0; i < num_samples; i ++) {
+	for (i = 0; i < num_samples; i++) {
 		fbuf[i] = ((data[i * 2] & 0xf0) >> 4) * 100;
 		fbuf[i] += (data[i * 2] & 0x0f) * 10;
 		fbuf[i] += ((data[i * 2 + 1] & 0xf0) >> 4);
 		fbuf[i] += (data[i * 2 + 1] & 0x0f) / 10.0;
 	}
-	memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-	analog.mq = SR_MQ_SOUND_PRESSURE_LEVEL;
-	analog.mqflags = devc->cur_mqflags;
-	analog.unit = SR_UNIT_DECIBEL_SPL;
-	analog.channels = sdi->channels;
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	analog.meaning->mq = SR_MQ_SOUND_PRESSURE_LEVEL;
+	analog.meaning->mqflags = devc->cur_mqflags;
+	analog.meaning->unit = SR_UNIT_DECIBEL_SPL;
+	analog.meaning->channels = sdi->channels;
 	analog.num_samples = num_samples;
 	analog.data = fbuf;
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 
 	devc->num_samples += analog.num_samples;
 	if (devc->limit_samples && devc->num_samples >= devc->limit_samples)
-		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-				devc->cb_data);
+		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi);
 
 	return;
 }
@@ -317,8 +321,7 @@ static void process_byte(const struct sr_dev_inst *sdi, const unsigned char c,
 			 * records. Otherwise the frontend would have no
 			 * way to tell where stored data ends and live
 			 * measurements begin. */
-			sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-					devc->cb_data);
+			sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi);
 		} else if (c == RECORD_DATA) {
 			devc->buf_len = 0;
 			devc->state = ST_GET_LOG_RECORD_DATA;
@@ -342,7 +345,7 @@ static void process_byte(const struct sr_dev_inst *sdi, const unsigned char c,
 			src = sr_config_new(SR_CONF_SAMPLE_INTERVAL,
 					g_variant_new_uint64(devc->buf[7] * 1000));
 			meta.config = g_slist_append(NULL, src);
-			sr_session_send(devc->cb_data, &packet);
+			sr_session_send(sdi, &packet);
 			g_free(src);
 			devc->buf_len = 0;
 		}

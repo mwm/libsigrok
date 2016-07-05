@@ -372,7 +372,8 @@ static int array_option_get(char *value, const char *(*array)[],
 static int array_float_get(gchar *value, const uint64_t array[][2],
 		int array_len, int *result)
 {
-	int i;
+	int i, e;
+	size_t pos;
 	uint64_t f;
 	float s;
 	unsigned int s_int;
@@ -381,28 +382,38 @@ static int array_float_get(gchar *value, const uint64_t array[][2],
 	memset(ss, 0, sizeof(ss));
 	memset(es, 0, sizeof(es));
 
-	strncpy(ss, value, 5);
-	strncpy(es, &(value[6]), 3);
+	/* Get index of the separating 'E' character and break up the string. */
+	pos = strcspn(value, "E");
+
+	strncpy(ss, value, pos);
+	strncpy(es, &(value[pos+1]), 3);
 
 	if (sr_atof_ascii(ss, &s) != SR_OK)
 		return SR_ERR;
-	if (sr_atoi(es, &i) != SR_OK)
+	if (sr_atoi(es, &e) != SR_OK)
 		return SR_ERR;
 
 	/* Transform e.g. 10^-03 to 1000 as the array stores the inverse. */
-	f = pow(10, abs(i));
+	f = pow(10, abs(e));
 
 	/*
 	 * Adjust the significand/factor pair to make sure
 	 * that f is a multiple of 1000.
 	 */
-	while ((int)fmod(log10(f), 3) > 0) { s *= 10; f *= 10; }
+	while ((int)fmod(log10(f), 3) > 0) {
+		s *= 10;
+
+		if (e < 0)
+			f *= 10;
+		else
+			f /= 10;
+	}
 
 	/* Truncate s to circumvent rounding errors. */
 	s_int = (unsigned int)s;
 
 	for (i = 0; i < array_len; i++) {
-		if ( (s_int == array[i][0]) && (f == array[i][1]) ) {
+		if ((s_int == array[i][0]) && (f == array[i][1])) {
 			*result = i;
 			return SR_OK;
 		}
@@ -953,7 +964,10 @@ static int dlm_analog_samples_send(GArray *data,
 	struct dev_context *devc;
 	struct scope_state *model_state;
 	struct sr_channel *ch;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_datafeed_packet packet;
 
 	devc = sdi->priv;
@@ -981,16 +995,17 @@ static int dlm_analog_samples_send(GArray *data,
 		g_array_append_val(float_data, voltage);
 	}
 
-	analog.channels = g_slist_append(NULL, ch);
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	analog.meaning->channels = g_slist_append(NULL, ch);
 	analog.num_samples = float_data->len;
 	analog.data = (float*)float_data->data;
-	analog.mq = SR_MQ_VOLTAGE;
-	analog.unit = SR_UNIT_VOLT;
-	analog.mqflags = 0;
-	packet.type = SR_DF_ANALOG_OLD;
+	analog.meaning->mq = SR_MQ_VOLTAGE;
+	analog.meaning->unit = SR_UNIT_VOLT;
+	analog.meaning->mqflags = 0;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
 	sr_session_send(sdi, &packet);
-	g_slist_free(analog.channels);
+	g_slist_free(analog.meaning->channels);
 
 	g_array_free(float_data, TRUE);
 	g_array_remove_range(data, 0, samples * sizeof(uint8_t));
@@ -1155,7 +1170,7 @@ SR_PRIV int dlm_data_receive(int fd, int revents, void *cb_data)
 		 * As of now we only support importing the current acquisition
 		 * data so we're going to stop at this point.
 		 */
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
+		sdi->driver->dev_acquisition_stop(sdi);
 		return TRUE;
 	} else
 		devc->current_channel = devc->current_channel->next;

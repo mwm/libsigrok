@@ -19,12 +19,12 @@
 
 /**
  * @file
- * Korad KDxxxxP power supply driver
+ * Korad KAxxxxP power supply driver
  * @internal
  */
 
-#ifndef LIBSIGROK_HARDWARE_KORAD_KDXXXXP_PROTOCOL_H
-#define LIBSIGROK_HARDWARE_KORAD_KDXXXXP_PROTOCOL_H
+#ifndef LIBSIGROK_HARDWARE_KORAD_KAXXXXP_PROTOCOL_H
+#define LIBSIGROK_HARDWARE_KORAD_KAXXXXP_PROTOCOL_H
 
 #include <stdint.h>
 #include <string.h>
@@ -32,17 +32,20 @@
 #include <libsigrok/libsigrok.h>
 #include "libsigrok-internal.h"
 
-#define LOG_PREFIX "korad-kdxxxxp"
+#define LOG_PREFIX "korad-kaxxxxp"
 
-#define KDXXXXP_POLL_INTERVAL_MS 80
+#define KAXXXXP_POLL_INTERVAL_MS 80
 
 enum {
-	VELLEMAN_LABPS_3005D,
+	VELLEMAN_PS3005D,
+	VELLEMAN_LABPS3005D,
+	KORAD_KA3005P,
+	KORAD_KA3005P_0X01,
 	/* Support for future devices with this protocol. */
 };
 
 /* Information on single model */
-struct korad_kdxxxxp_model {
+struct korad_kaxxxxp_model {
 	int model_id; /**< Model info */
 	const char *vendor; /**< Vendor name */
 	const char *name; /**< Model name */
@@ -54,33 +57,28 @@ struct korad_kdxxxxp_model {
 
 /* Reply targets */
 enum {
-	KDXXXXP_CURRENT,
-	KDXXXXP_CURRENT_MAX,
-	KDXXXXP_VOLTAGE,
-	KDXXXXP_VOLTAGE_MAX,
-	KDXXXXP_STATUS,
-	KDXXXXP_OUTPUT,
-	KDXXXXP_BEEP,
-	KDXXXXP_OCP,
-	KDXXXXP_OVP,
-	KDXXXXP_SAVE,
-	KDXXXXP_RECALL,
+	KAXXXXP_CURRENT,
+	KAXXXXP_CURRENT_MAX,
+	KAXXXXP_VOLTAGE,
+	KAXXXXP_VOLTAGE_MAX,
+	KAXXXXP_STATUS,
+	KAXXXXP_OUTPUT,
+	KAXXXXP_BEEP,
+	KAXXXXP_OCP,
+	KAXXXXP_OVP,
+	KAXXXXP_SAVE,
+	KAXXXXP_RECALL,
 };
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
 	/* Model-specific information */
-	const struct korad_kdxxxxp_model *model; /**< Model information. */
+	const struct korad_kaxxxxp_model *model; /**< Model information. */
 
 	/* Acquisition settings */
-	uint64_t limit_samples;
-	uint64_t limit_msec;
-	uint64_t num_samples;
-	int64_t starttime;
+	struct sr_sw_limits limits;
 	int64_t req_sent_at;
 	gboolean reply_pending;
-
-	void *cb_data;
 
 	/* Operational state */
 	float current;          /**< Last current value [A] read from device. */
@@ -100,18 +98,18 @@ struct dev_context {
 	char reply[6];
 };
 
-SR_PRIV int korad_kdxxxxp_send_cmd(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_send_cmd(struct sr_serial_dev_inst *serial,
 					const char *cmd);
-SR_PRIV int korad_kdxxxxp_read_chars(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_read_chars(struct sr_serial_dev_inst *serial,
 					int count, char *buf);
-SR_PRIV int korad_kdxxxxp_set_value(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_set_value(struct sr_serial_dev_inst *serial,
 					struct dev_context *devc);
-SR_PRIV int korad_kdxxxxp_query_value(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_query_value(struct sr_serial_dev_inst *serial,
 					struct dev_context *devc);
-SR_PRIV int korad_kdxxxxp_get_reply(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_get_reply(struct sr_serial_dev_inst *serial,
 					struct dev_context *devc);
-SR_PRIV int korad_kdxxxxp_get_all_values(struct sr_serial_dev_inst *serial,
+SR_PRIV int korad_kaxxxxp_get_all_values(struct sr_serial_dev_inst *serial,
 					struct dev_context *devc);
-SR_PRIV int korad_kdxxxxp_receive_data(int fd, int revents, void *cb_data);
+SR_PRIV int korad_kaxxxxp_receive_data(int fd, int revents, void *cb_data);
 
 #endif

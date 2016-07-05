@@ -22,8 +22,6 @@
 #include <math.h>
 #include "protocol.h"
 
-extern struct sr_dev_driver uni_t_ut32x_driver_info;
-
 static float parse_temperature(unsigned char *buf)
 {
 	float temp;
@@ -62,7 +60,10 @@ static void process_packet(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	GString *spew;
 	float temp;
 	int i;
@@ -89,18 +90,18 @@ static void process_packet(struct sr_dev_inst *sdi)
 		is_valid = FALSE;
 
 	if (is_valid) {
-		memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-		analog.mq = SR_MQ_TEMPERATURE;
-		analog.mqflags = 0;
+		sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+		analog.meaning->mq = SR_MQ_TEMPERATURE;
+		analog.meaning->mqflags = 0;
 		switch (devc->packet[5] - 0x30) {
 		case 1:
-			analog.unit = SR_UNIT_CELSIUS;
+			analog.meaning->unit = SR_UNIT_CELSIUS;
 			break;
 		case 2:
-			analog.unit = SR_UNIT_FAHRENHEIT;
+			analog.meaning->unit = SR_UNIT_FAHRENHEIT;
 			break;
 		case 3:
-			analog.unit = SR_UNIT_KELVIN;
+			analog.meaning->unit = SR_UNIT_KELVIN;
 			break;
 		default:
 			/* We can still pass on the measurement, whatever it is. */
@@ -109,17 +110,17 @@ static void process_packet(struct sr_dev_inst *sdi)
 		switch (devc->packet[13] - 0x30) {
 		case 0:
 			/* Channel T1. */
-			analog.channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 0));
+			analog.meaning->channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 0));
 			break;
 		case 1:
 			/* Channel T2. */
-			analog.channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 1));
+			analog.meaning->channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 1));
 			break;
 		case 2:
 		case 3:
 			/* Channel T1-T2. */
-			analog.channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 2));
-			analog.mqflags |= SR_MQFLAG_RELATIVE;
+			analog.meaning->channels = g_slist_append(NULL, g_slist_nth_data(sdi->channels, 2));
+			analog.meaning->mqflags |= SR_MQFLAG_RELATIVE;
 			break;
 		default:
 			sr_err("Unknown channel 0x%.2x.", devc->packet[13]);
@@ -128,10 +129,10 @@ static void process_packet(struct sr_dev_inst *sdi)
 		if (is_valid) {
 			analog.num_samples = 1;
 			analog.data = &temp;
-			packet.type = SR_DF_ANALOG_OLD;
+			packet.type = SR_DF_ANALOG;
 			packet.payload = &analog;
-			sr_session_send(devc->cb_data, &packet);
-			g_slist_free(analog.channels);
+			sr_session_send(sdi, &packet);
+			g_slist_free(analog.meaning->channels);
 		}
 	}
 
@@ -140,8 +141,7 @@ static void process_packet(struct sr_dev_inst *sdi)
 	 * memory slots come through as "----" measurements. */
 	devc->num_samples++;
 	if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-				devc->cb_data);
+		sdi->driver->dev_acquisition_stop(sdi);
 	}
 
 }
@@ -195,7 +195,6 @@ SR_PRIV int uni_t_ut32x_handle_events(int fd, int revents, void *cb_data)
 	struct dev_context *devc;
 	struct sr_dev_driver *di;
 	struct sr_dev_inst *sdi;
-	struct sr_datafeed_packet packet;
 	struct sr_usb_dev_inst *usb;
 	struct timeval tv;
 	int len, ret;
@@ -219,8 +218,7 @@ SR_PRIV int uni_t_ut32x_handle_events(int fd, int revents, void *cb_data)
 
 	if (sdi->status == SR_ST_STOPPING) {
 		usb_source_remove(sdi->session, drvc->sr_ctx);
-		packet.type = SR_DF_END;
-		sr_session_send(cb_data, &packet);
+		std_session_send_df_end(sdi);
 
 		/* Tell the device to stop sending USB packets. */
 		usb = sdi->conn;

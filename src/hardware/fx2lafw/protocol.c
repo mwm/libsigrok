@@ -125,6 +125,8 @@ SR_PRIV int fx2lafw_command_start_acquisition(const struct sr_dev_inst *sdi)
 	/* Select the sampling width. */
 	cmd.flags |= devc->sample_wide ? CMD_START_FLAGS_SAMPLE_16BIT :
 		CMD_START_FLAGS_SAMPLE_8BIT;
+	/* Enable CTL2 clock. */
+	cmd.flags |= (devc->profile->dev_caps & DEV_CAPS_AX_ANALOG) ? CMD_START_FLAGS_CLK_CTL2 : 0;
 
 	/* Send the control message. */
 	ret = libusb_control_transfer(usb->devhdl, LIBUSB_REQUEST_TYPE_VENDOR |
@@ -304,6 +306,8 @@ SR_PRIV struct dev_context *fx2lafw_dev_new(void)
 	devc->limit_samples = 0;
 	devc->capture_ratio = 0;
 	devc->sample_wide = FALSE;
+	devc->dslogic_continuous_mode = FALSE;
+	devc->dslogic_clock_edge = DS_EDGE_RISING;
 	devc->stl = NULL;
 
 	return devc;
@@ -323,20 +327,20 @@ SR_PRIV void fx2lafw_abort_acquisition(struct dev_context *devc)
 
 static void finish_acquisition(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
 	struct dev_context *devc;
 
 	devc = sdi->priv;
 
-	/* Terminate session. */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
-	/* Remove fds from polling. */
 	usb_source_remove(sdi->session, devc->ctx);
 
 	devc->num_transfers = 0;
 	g_free(devc->transfers);
+
+	/* Free the deinterlace buffers if we had them */
+	g_free(devc->logic_buffer);
+	g_free(devc->analog_buffer);
 
 	if (devc->stl) {
 		soft_trigger_logic_free(devc->stl);
@@ -381,13 +385,81 @@ static void resubmit_transfer(struct libusb_transfer *transfer)
 
 }
 
+SR_PRIV void mso_send_data_proc(struct sr_dev_inst *sdi,
+	uint8_t *data, size_t length, size_t sample_width)
+{
+	size_t i;
+	struct dev_context *devc;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
+
+	(void)sample_width;
+
+	devc = sdi->priv;
+
+	length /= 2;
+
+	/* Send the logic */
+	for (i = 0; i < length; i++) {
+		devc->logic_buffer[i]  = data[i * 2];
+		/* Rescale to -10V - +10V from 0-255. */
+		devc->analog_buffer[i] = (data[i * 2 + 1] - 128.0f) / 12.8f;
+	};
+
+	const struct sr_datafeed_logic logic = {
+		.length = length,
+		.unitsize = 1,
+		.data = devc->logic_buffer
+	};
+
+	const struct sr_datafeed_packet logic_packet = {
+		.type = SR_DF_LOGIC,
+		.payload = &logic
+	};
+
+	sr_session_send(sdi, &logic_packet);
+
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 2);
+	analog.meaning->channels = devc->enabled_analog_channels;
+	analog.meaning->mq = SR_MQ_VOLTAGE;
+	analog.meaning->unit = SR_UNIT_VOLT;
+	analog.meaning->mqflags = 0 /* SR_MQFLAG_DC */;
+	analog.num_samples = length;
+	analog.data = devc->analog_buffer;
+
+	const struct sr_datafeed_packet analog_packet = {
+		.type = SR_DF_ANALOG,
+		.payload = &analog
+	};
+
+	sr_session_send(sdi, &analog_packet);
+}
+
+SR_PRIV void la_send_data_proc(struct sr_dev_inst *sdi,
+	uint8_t *data, size_t length, size_t sample_width)
+{
+	const struct sr_datafeed_logic logic = {
+		.length = length,
+		.unitsize = sample_width,
+		.data = data
+	};
+
+	const struct sr_datafeed_packet packet = {
+		.type = SR_DF_LOGIC,
+		.payload = &logic
+	};
+
+	sr_session_send(sdi, &packet);
+}
+
 SR_PRIV void LIBUSB_CALL fx2lafw_receive_transfer(struct libusb_transfer *transfer)
 {
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
 	gboolean packet_has_error = FALSE;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_logic logic;
 	unsigned int num_samples;
 	int trigger_offset, cur_sample_count, unitsize;
 	int pre_trigger_samples;
@@ -440,37 +512,51 @@ SR_PRIV void LIBUSB_CALL fx2lafw_receive_transfer(struct libusb_transfer *transf
 	} else {
 		devc->empty_transfer_count = 0;
 	}
-
 	if (devc->trigger_fired) {
 		if (!devc->limit_samples || devc->sent_samples < devc->limit_samples) {
 			/* Send the incoming transfer to the session bus. */
-			packet.type = SR_DF_LOGIC;
-			packet.payload = &logic;
 			if (devc->limit_samples && devc->sent_samples + cur_sample_count > devc->limit_samples)
 				num_samples = devc->limit_samples - devc->sent_samples;
 			else
 				num_samples = cur_sample_count;
-			logic.length = num_samples * unitsize;
-			logic.unitsize = unitsize;
-			logic.data = transfer->buffer;
-			sr_session_send(devc->cb_data, &packet);
-			devc->sent_samples += num_samples;
+
+			if (devc->dslogic && devc->trigger_pos > devc->sent_samples
+				&& devc->trigger_pos <= devc->sent_samples + num_samples) {
+					/* DSLogic trigger in this block. Send trigger position. */
+					trigger_offset = devc->trigger_pos - devc->sent_samples;
+					/* Pre-trigger samples. */
+					devc->send_data_proc(sdi, (uint8_t *)transfer->buffer,
+						trigger_offset * unitsize, unitsize);
+					devc->sent_samples += trigger_offset;
+					/* Trigger position. */
+					devc->trigger_pos = 0;
+					packet.type = SR_DF_TRIGGER;
+					packet.payload = NULL;
+					sr_session_send(sdi, &packet);
+					/* Post trigger samples. */
+					num_samples -= trigger_offset;
+					devc->send_data_proc(sdi, (uint8_t *)transfer->buffer
+							+ trigger_offset * unitsize, num_samples * unitsize, unitsize);
+					devc->sent_samples += num_samples;
+			} else {
+				devc->send_data_proc(sdi, (uint8_t *)transfer->buffer,
+					num_samples * unitsize, unitsize);
+				devc->sent_samples += num_samples;
+			}
 		}
 	} else {
 		trigger_offset = soft_trigger_logic_check(devc->stl,
 			transfer->buffer, transfer->actual_length, &pre_trigger_samples);
 		if (trigger_offset > -1) {
 			devc->sent_samples += pre_trigger_samples;
-			packet.type = SR_DF_LOGIC;
-			packet.payload = &logic;
 			num_samples = cur_sample_count - trigger_offset;
 			if (devc->limit_samples &&
 					num_samples > devc->limit_samples - devc->sent_samples)
 				num_samples = devc->limit_samples - devc->sent_samples;
-			logic.length = num_samples * unitsize;
-			logic.unitsize = unitsize;
-			logic.data = transfer->buffer + trigger_offset * unitsize;
-			sr_session_send(devc->cb_data, &packet);
+
+			devc->send_data_proc(sdi, (uint8_t *)transfer->buffer
+					+ trigger_offset * unitsize,
+					num_samples * unitsize, unitsize);
 			devc->sent_samples += num_samples;
 
 			devc->trigger_fired = TRUE;

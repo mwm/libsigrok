@@ -39,6 +39,9 @@ enum {
 	AGILENT_U1251,
 	AGILENT_U1252,
 	AGILENT_U1253,
+
+	KEYSIGHT_U1281,
+	KEYSIGHT_U1282,
 };
 
 /* Supported device profiles */
@@ -52,24 +55,22 @@ struct agdmm_profile {
 /* Private, per-device-instance driver context. */
 struct dev_context {
 	const struct agdmm_profile *profile;
-	uint64_t limit_samples;
-	uint64_t limit_msec;
-
-	/* Opaque pointer passed in by the frontend. */
-	void *cb_data;
+	struct sr_sw_limits limits;
 
 	/* Runtime. */
-	uint64_t num_samples;
 	int64_t jobqueue[8];
 	unsigned char buf[AGDMM_BUFSIZE];
 	int buflen;
 	int cur_mq;
 	int cur_unit;
 	int cur_mqflags;
-	int cur_divider;
+	int cur_digits;
+	int cur_encoding;
+	int cur_exponent;
 	int cur_acdc;
 	int mode_tempaux;
 	int mode_continuity;
+	int mode_squarewave;
 };
 
 struct agdmm_job {

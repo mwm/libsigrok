@@ -62,16 +62,20 @@
 extern SR_PRIV struct sr_input_module input_chronovu_la8;
 extern SR_PRIV struct sr_input_module input_csv;
 extern SR_PRIV struct sr_input_module input_binary;
+extern SR_PRIV struct sr_input_module input_trace32_ad;
 extern SR_PRIV struct sr_input_module input_vcd;
 extern SR_PRIV struct sr_input_module input_wav;
+extern SR_PRIV struct sr_input_module input_raw_analog;
 /* @endcond */
 
 static const struct sr_input_module *input_module_list[] = {
 	&input_binary,
 	&input_chronovu_la8,
 	&input_csv,
+	&input_trace32_ad,
 	&input_vcd,
 	&input_wav,
+	&input_raw_analog,
 	NULL,
 };
 
@@ -553,6 +557,27 @@ SR_API int sr_input_end(const struct sr_input *in)
 {
 	sr_spew("Calling end() on %s module.", in->module->id);
 	return in->module->end((struct sr_input *)in);
+}
+
+/**
+ * Reset the input module's input handling structures.
+ *
+ * Causes the input module to reset its internal state so that we can re-send
+ * the input data from the beginning without having to re-create the entire
+ * input module.
+ *
+ * @since 0.5.0
+ */
+SR_API int sr_input_reset(const struct sr_input *in)
+{
+	if (!in->module->reset) {
+		sr_spew("Tried to reset %s module but no reset handler found.",
+			in->module->id);
+		return SR_OK;
+	}
+
+	sr_spew("Resetting %s module.", in->module->id);
+	return in->module->reset((struct sr_input *)in);
 }
 
 /**

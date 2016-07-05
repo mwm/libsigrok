@@ -108,7 +108,6 @@ struct dev_context {
 	/* Acquisition settings */
 	GSList *enabled_channels;
 	uint64_t limit_frames;
-	void *cb_data;
 	enum data_source data_source;
 	uint64_t analog_frame_size;
 	uint64_t digital_frame_size;
@@ -118,12 +117,14 @@ struct dev_context {
 	gboolean digital_channels[MAX_DIGITAL_CHANNELS];
 	gboolean la_enabled;
 	float timebase;
+	float attenuation[MAX_ANALOG_CHANNELS];
 	float vdiv[MAX_ANALOG_CHANNELS];
 	int vert_reference[MAX_ANALOG_CHANNELS];
 	float vert_offset[MAX_ANALOG_CHANNELS];
 	char *trigger_source;
 	float horiz_triggerpos;
 	char *trigger_slope;
+	float trigger_level;
 	char *coupling[MAX_ANALOG_CHANNELS];
 
 	/* Operational state */
@@ -154,5 +155,6 @@ SR_PRIV int rigol_ds_capture_start(const struct sr_dev_inst *sdi);
 SR_PRIV int rigol_ds_channel_start(const struct sr_dev_inst *sdi);
 SR_PRIV int rigol_ds_receive(int fd, int revents, void *cb_data);
 SR_PRIV int rigol_ds_get_dev_cfg(const struct sr_dev_inst *sdi);
+SR_PRIV int rigol_ds_get_dev_cfg_vertical(const struct sr_dev_inst *sdi);
 
 #endif

@@ -24,8 +24,6 @@
 #include "libsigrok-internal.h"
 #include "protocol.h"
 
-SR_PRIV struct sr_dev_driver lascar_el_usb_driver_info;
-
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -37,11 +35,6 @@ static const uint32_t devopts[] = {
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_DATALOG | SR_CONF_GET | SR_CONF_SET,
 };
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -79,32 +72,21 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			}
 			sdi->inst_type = SR_INST_USB;
 			sdi->conn = usb;
-			drvc->instances = g_slist_append(drvc->instances, sdi);
 			devices = g_slist_append(devices, sdi);
 		}
 		g_slist_free(usb_devices);
 	} else
 		g_slist_free_full(usb_devices, g_free);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di = sdi->driver;
-	struct drv_context *drvc;
+	struct drv_context *drvc = di->context;;
 	struct sr_usb_dev_inst *usb;
 	int ret;
-
-	if (!(drvc = di->context)) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	usb = sdi->conn;
 
@@ -122,13 +104,7 @@ static int dev_open(struct sr_dev_inst *sdi)
 
 static int dev_close(struct sr_dev_inst *sdi)
 {
-	struct sr_dev_driver *di = sdi->driver;
 	struct sr_usb_dev_inst *usb;
-
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	usb = sdi->conn;
 
@@ -142,21 +118,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	sdi->status = SR_ST_INACTIVE;
 
 	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	int ret;
-	struct drv_context *drvc;
-
-	if (!(drvc = di->context))
-		/* Can get called on an unused driver, doesn't matter. */
-		return SR_OK;
-
-	ret = std_dev_clear(di, NULL);
-	g_free(drvc);
-
-	return ret;
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -198,7 +159,6 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
-	struct sr_dev_driver *di = sdi->driver;
 	struct dev_context *devc;
 	int ret;
 
@@ -206,11 +166,6 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
-
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 
 	devc = sdi->priv;
 	ret = SR_OK;
@@ -323,7 +278,7 @@ static int lascar_proc_config(const struct sr_dev_inst *sdi)
 	return ret;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di = sdi->driver;
 	struct sr_datafeed_packet packet;
@@ -341,36 +296,28 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
-
 	drvc = di->context;
 	devc = sdi->priv;
 	usb = sdi->conn;
-	devc->cb_data = cb_data;
 
 	if (lascar_proc_config(sdi) != SR_OK)
 		return SR_ERR;
 
 	sr_dbg("Starting log retrieval.");
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	interval = (devc->config[0x1c] | (devc->config[0x1d] << 8)) * 1000;
 	packet.type = SR_DF_META;
 	packet.payload = &meta;
 	src = sr_config_new(SR_CONF_SAMPLE_INTERVAL, g_variant_new_uint64(interval));
 	meta.config = g_slist_append(NULL, src);
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 	g_free(src);
 
 	if (devc->logged_samples == 0) {
 		/* This ensures the frontend knows the session is done. */
-		packet.type = SR_DF_END;
-		sr_session_send(devc->cb_data, &packet);
+		std_session_send_df_end(sdi);
 		return SR_OK;
 	}
 
@@ -436,7 +383,8 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 
 	buf = g_malloc(4096);
 	libusb_fill_bulk_transfer(xfer_in, usb->devhdl, LASCAR_EP_IN,
-			buf, 4096, lascar_el_usb_receive_transfer, cb_data, 100);
+			buf, 4096, lascar_el_usb_receive_transfer,
+			(struct sr_dev_inst *)sdi, 100);
 	if ((ret = libusb_submit_transfer(xfer_in) != 0)) {
 		sr_err("Unable to submit transfer: %s.", libusb_error_name(ret));
 		libusb_free_transfer(xfer_in);
@@ -447,16 +395,8 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+SR_PRIV int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_dev_driver *di = sdi->driver;
-	(void)cb_data;
-
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
-
 	if (sdi->status != SR_ST_ACTIVE) {
 		sr_err("Device inactive, can't stop acquisition.");
 		return SR_ERR;
@@ -472,10 +412,10 @@ SR_PRIV struct sr_dev_driver lascar_el_usb_driver_info = {
 	.name = "lascar-el-usb",
 	.longname = "Lascar EL-USB",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -486,3 +426,4 @@ SR_PRIV struct sr_dev_driver lascar_el_usb_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(lascar_el_usb_driver_info);

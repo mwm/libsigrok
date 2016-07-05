@@ -196,6 +196,120 @@ START_TEST(test_set_rational_null)
 }
 END_TEST
 
+START_TEST(test_cmp_rational)
+{
+	const struct sr_rational r[] = { { 1, 1 },
+		{ 2, 2 },
+		{ 1000, 1000 },
+		{ INT64_MAX, INT64_MAX },
+		{ 1, 4 },
+		{ 2, 8 },
+		{ INT64_MAX, UINT64_MAX },
+		{ INT64_MIN, UINT64_MAX },
+	};
+
+	fail_unless(sr_rational_eq(&r[0], &r[0]) == 1);
+	fail_unless(sr_rational_eq(&r[0], &r[1]) == 1);
+	fail_unless(sr_rational_eq(&r[1], &r[2]) == 1);
+	fail_unless(sr_rational_eq(&r[2], &r[3]) == 1);
+	fail_unless(sr_rational_eq(&r[3], &r[3]) == 1);
+
+	fail_unless(sr_rational_eq(&r[4], &r[4]) == 1);
+	fail_unless(sr_rational_eq(&r[4], &r[5]) == 1);
+	fail_unless(sr_rational_eq(&r[5], &r[5]) == 1);
+
+	fail_unless(sr_rational_eq(&r[6], &r[6]) == 1);
+	fail_unless(sr_rational_eq(&r[7], &r[7]) == 1);
+
+	fail_unless(sr_rational_eq(&r[1], &r[4]) == 0);
+}
+END_TEST
+
+START_TEST(test_mult_rational)
+{
+	const struct sr_rational r[][3] = {
+		/*   a    *    b    =    c   */
+		{ { 1, 1 }, { 1, 1 }, { 1, 1 }},
+		{ { 2, 1 }, { 3, 1 }, { 6, 1 }},
+		{ { 1, 2 }, { 2, 1 }, { 1, 1 }},
+		/* Test negative numbers */
+		{ { -1, 2 }, { 2, 1 }, { -1, 1 }},
+		{ { -1, 2 }, { -2, 1 }, { 1, 1 }},
+		{ { -(1ll<<20), (1ll<<10) }, { -(1ll<<20), 1 }, { (1ll<<30), 1 }},
+		/* Test reduction */
+		{ { INT32_MAX, (1ll<<12) }, { (1<<2), 1 }, { INT32_MAX, (1ll<<10) }},
+		{ { INT64_MAX, (1ll<<63) }, { (1<<3), 1 }, { INT64_MAX, (1ll<<60) }},
+		/* Test large numbers */
+		{ {  (1ll<<40), (1ll<<10) }, {  (1ll<<30), 1 }, { (1ll<<60), 1 }},
+		{ { -(1ll<<40), (1ll<<10) }, { -(1ll<<30), 1 }, { (1ll<<60), 1 }},
+
+		{ { 1000, 1 }, { 8000, 1 }, { 8000000, 1 }},
+		{ { 10000, 1 }, { 80000, 1 }, { 800000000, 1 }},
+		{ { 10000*3, 4 }, { 80000*3, 1 }, { 200000000*9, 1 }},
+		{ { 1, 1000 }, { 1, 8000 }, { 1, 8000000 }},
+		{ { 1, 10000 }, { 1, 80000 }, { 1, 800000000 }},
+		{ { 4, 10000*3 }, { 1, 80000*3 }, { 1, 200000000*9 }},
+
+		{ { -10000*3, 4 }, { 80000*3, 1 }, { -200000000*9, 1 }},
+		{ { 10000*3, 4 }, { -80000*3, 1 }, { -200000000*9, 1 }},
+	};
+
+	for (unsigned i = 0; i < ARRAY_SIZE(r); i++) {
+		struct sr_rational res;
+
+		int rc = sr_rational_mult(&res, &r[i][0], &r[i][1]);
+		fail_unless(rc == SR_OK);
+		fail_unless(sr_rational_eq(&res, &r[i][2]) == 1,
+			"sr_rational_mult() failed: [%d] %ld/%lu != %ld/%lu.",
+			i, res.p, res.q, r[i][2].p, r[i][2].q);
+	}
+}
+END_TEST
+
+START_TEST(test_div_rational)
+{
+	const struct sr_rational r[][3] = {
+		/*   a    *    b    =    c   */
+		{ { 1, 1 }, { 1, 1 }, { 1, 1 }},
+		{ { 2, 1 }, { 1, 3 }, { 6, 1 }},
+		{ { 1, 2 }, { 1, 2 }, { 1, 1 }},
+		/* Test negative numbers */
+		{ { -1, 2 }, { 1, 2 }, { -1, 1 }},
+		{ { -1, 2 }, { -1, 2 }, { 1, 1 }},
+		{ { -(1ll<<20), (1ll<<10) }, { -1, (1ll<<20) }, { (1ll<<30), 1 }},
+		/* Test reduction */
+		{ { INT32_MAX, (1ll<<12) }, { 1, (1<<2) }, { INT32_MAX, (1ll<<10) }},
+		{ { INT64_MAX, (1ll<<63) }, { 1, (1<<3) }, { INT64_MAX, (1ll<<60) }},
+		/* Test large numbers */
+		{ {  (1ll<<40), (1ll<<10) }, {  1, (1ll<<30) }, { (1ll<<60), 1 }},
+		{ { -(1ll<<40), (1ll<<10) }, { -1, (1ll<<30) }, { (1ll<<60), 1 }},
+
+		{ { 10000*3, 4 }, { 1, 80000*3 }, { 200000000*9, 1 }},
+		{ { 4, 10000*3 }, { 80000*3, 1 }, { 1, 200000000*9 }},
+
+		{ { -10000*3, 4 }, { 1, 80000*3 }, { -200000000*9, 1 }},
+		{ { 10000*3, 4 }, { -1, 80000*3 }, { -200000000*9, 1 }},
+	};
+
+	for (unsigned i = 0; i < ARRAY_SIZE(r); i++) {
+		struct sr_rational res;
+
+		int rc = sr_rational_div(&res, &r[i][0], &r[i][1]);
+		fail_unless(rc == SR_OK);
+		fail_unless(sr_rational_eq(&res, &r[i][2]) == 1,
+			"sr_rational_mult() failed: [%d] %ld/%lu != %ld/%lu.",
+			i, res.p, res.q, r[i][2].p, r[i][2].q);
+	}
+
+	{
+		struct sr_rational res;
+		int rc = sr_rational_div(&res, &r[0][0], &((struct sr_rational){ 0, 5 }));
+
+		fail_unless(rc == SR_ERR_ARG);
+	}
+}
+END_TEST
+
 Suite *suite_analog(void)
 {
 	Suite *s;
@@ -210,6 +324,9 @@ Suite *suite_analog(void)
 	tcase_add_test(tc, test_analog_unit_to_string_null);
 	tcase_add_test(tc, test_set_rational);
 	tcase_add_test(tc, test_set_rational_null);
+	tcase_add_test(tc, test_cmp_rational);
+	tcase_add_test(tc, test_mult_rational);
+	tcase_add_test(tc, test_div_rational);
 	suite_add_tcase(s, tc);
 
 	return s;

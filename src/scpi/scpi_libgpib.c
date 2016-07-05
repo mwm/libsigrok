@@ -84,8 +84,8 @@ static int scpi_gpib_send(void *priv, const char *command)
 
 	if (ibsta & ERR)
 	{
-		sr_err("Error while sending SCPI command: '%s': iberr = %d.",
-				command, iberr);
+		sr_err("Error while sending SCPI command: '%s': iberr = %s.",
+			command, gpib_error_string(iberr));
 		return SR_ERR;
 	}
 
@@ -118,7 +118,8 @@ static int scpi_gpib_read_data(void *priv, char *buf, int maxlen)
 
 	if (ibsta & ERR)
 	{
-		sr_err("Error while reading SCPI response: iberr = %d.", iberr);
+		sr_err("Error while reading SCPI response: iberr = %s.",
+		        gpib_error_string(iberr));
 		return SR_ERR;
 	}
 
@@ -138,6 +139,9 @@ static int scpi_gpib_close(struct sr_scpi_dev_inst *scpi)
 {
 	struct scpi_gpib *gscpi = scpi->priv;
 
+	/* Put device in back local mode to prevent lock-out of front panel. */
+	ibloc(gscpi->descriptor);
+	/* Now it's safe to close the handle. */
 	ibonl(gscpi->descriptor, 0);
 
 	return SR_OK;

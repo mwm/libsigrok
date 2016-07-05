@@ -33,6 +33,8 @@ struct out_context {
 	gboolean zip_created;
 	uint64_t samplerate;
 	char *filename;
+	gint first_analog_index;
+	gint *analog_index_map;
 };
 
 static int init(struct sr_output *o, GHashTable *options)
@@ -65,6 +67,9 @@ static int zip_create(const struct sr_output *o)
 	const char *devgroup;
 	char *s, *metabuf;
 	gsize metalen;
+	guint logic_channels = 0, enabled_logic_channels = 0;
+	guint enabled_analog_channels = 0;
+	guint index;
 
 	outc = o->priv;
 
@@ -97,23 +102,68 @@ static int zip_create(const struct sr_output *o)
 			SR_PACKAGE_VERSION_STRING);
 
 	devgroup = "device 1";
-	g_key_file_set_string(meta, devgroup, "capturefile", "logic-1");
 
-	g_key_file_set_integer(meta, devgroup, "total probes",
-			g_slist_length(o->sdi->channels));
+	for (l = o->sdi->channels; l; l = l->next) {
+		ch = l->data;
+
+		switch (ch->type) {
+		case SR_CHANNEL_LOGIC:
+			if (ch->enabled)
+				enabled_logic_channels++;
+			logic_channels++;
+			break;
+		case SR_CHANNEL_ANALOG:
+			if (ch->enabled)
+				enabled_analog_channels++;
+			break;
+		}
+	}
+
+	/* When reading the file, the first index of the analog channels
+	 * can only be deduced through the "total probes" count, so the
+	 * first analog index must follow the last logic one, enabled or not. */
+	if (enabled_logic_channels > 0)
+		outc->first_analog_index = logic_channels + 1;
+	else
+		outc->first_analog_index = 1;
+
+	/* Only set capturefile and probes if we will actually save logic data. */
+	if (enabled_logic_channels > 0) {
+		g_key_file_set_string(meta, devgroup, "capturefile", "logic-1");
+		g_key_file_set_integer(meta, devgroup, "total probes", logic_channels);
+	}
 
 	s = sr_samplerate_string(outc->samplerate);
 	g_key_file_set_string(meta, devgroup, "samplerate", s);
 	g_free(s);
 
+	g_key_file_set_integer(meta, devgroup, "total analog", enabled_analog_channels);
+
+	/* Make the array one entry larger than needed so we can use the final
+	 * entry as terminator, which is set to -1. */
+	outc->analog_index_map = g_malloc0(sizeof(gint) * (enabled_analog_channels + 1));
+	outc->analog_index_map[enabled_analog_channels] = -1;
+
+	index = 0;
 	for (l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
-		if (ch->enabled && ch->type == SR_CHANNEL_LOGIC) {
+		if (!ch->enabled)
+			continue;
+
+		switch (ch->type) {
+		case SR_CHANNEL_LOGIC:
 			s = g_strdup_printf("probe%d", ch->index + 1);
-			g_key_file_set_string(meta, devgroup, s, ch->name);
-			g_free(s);
+			break;
+		case SR_CHANNEL_ANALOG:
+			outc->analog_index_map[index] = ch->index;
+			s = g_strdup_printf("analog%d", outc->first_analog_index + index);
+			index++;
+			break;
 		}
+		g_key_file_set_string(meta, devgroup, s, ch->name);
+		g_free(s);
 	}
+
 	metabuf = g_key_file_to_data(meta, &metalen, NULL);
 	g_key_file_free(meta);
 
@@ -255,12 +305,110 @@ static int zip_append(const struct sr_output *o, unsigned char *buf,
 	return SR_OK;
 }
 
+static int zip_append_analog(const struct sr_output *o,
+		const struct sr_datafeed_analog *analog)
+{
+	struct out_context *outc;
+	struct zip *archive;
+	struct zip_source *analogsrc;
+	int64_t i, num_files;
+	struct zip_stat zs;
+	uint64_t chunk_num;
+	const char *entry_name;
+	char *basename;
+	gsize baselen;
+	struct sr_channel *channel;
+	float *chunkbuf;
+	gsize chunksize;
+	char *chunkname;
+	unsigned int next_chunk_num, index;
+
+	outc = o->priv;
+
+	/* TODO: support packets covering multiple channels */
+	if (g_slist_length(analog->meaning->channels) != 1) {
+		sr_err("Analog packets covering multiple channels not supported yet");
+		return SR_ERR;
+	}
+	channel = analog->meaning->channels->data;
+
+	/* When reading the file, analog channels must be consecutive.
+	 * Thus we need a global channel index map as we don't know in
+	 * which order the channel data comes in. */
+	for (index = 0; outc->analog_index_map[index] != -1; index++)
+		if (outc->analog_index_map[index] == channel->index)
+			break;
+	if (outc->analog_index_map[index] == -1)
+		return SR_ERR_ARG;  /* Channel index was not in the list */
+
+	index += outc->first_analog_index;
+
+	if (!(archive = zip_open(outc->filename, 0, NULL)))
+		return SR_ERR;
+
+	if (zip_stat(archive, "metadata", 0, &zs) < 0) {
+		sr_err("Failed to open metadata: %s", zip_strerror(archive));
+		goto err_zip_discard;
+	}
+
+	basename = g_strdup_printf("analog-1-%u", index);
+	baselen = strlen(basename);
+	next_chunk_num = 1;
+	num_files = zip_get_num_entries(archive, 0);
+	for (i = 0; i < num_files; i++) {
+		entry_name = zip_get_name(archive, i, 0);
+		if (!entry_name || strncmp(entry_name, basename, baselen) != 0) {
+			continue;
+		} else if (entry_name[baselen] == '-') {
+			chunk_num = g_ascii_strtoull(entry_name + baselen + 1, NULL, 10);
+			if (chunk_num < G_MAXINT && chunk_num >= next_chunk_num)
+				next_chunk_num = chunk_num + 1;
+		}
+	}
+
+	chunksize = sizeof(float) * analog->num_samples;
+	if (!(chunkbuf = g_try_malloc(chunksize)))
+		goto err_free_basename;
+
+	if (sr_analog_to_float(analog, chunkbuf) != SR_OK)
+		goto err_free_chunkbuf;
+
+	analogsrc = zip_source_buffer(archive, chunkbuf, chunksize, FALSE);
+	chunkname = g_strdup_printf("%s-%u", basename, next_chunk_num);
+	i = zip_add(archive, chunkname, analogsrc);
+	g_free(chunkname);
+	if (i < 0) {
+		sr_err("Failed to add chunk '%s': %s", chunkname, zip_strerror(archive));
+		zip_source_free(analogsrc);
+		goto err_free_chunkbuf;
+	}
+	if (zip_close(archive) < 0) {
+		sr_err("Error saving session file: %s", zip_strerror(archive));
+		goto err_free_chunkbuf;
+	}
+
+	g_free(basename);
+	g_free(chunkbuf);
+
+	return SR_OK;
+
+err_free_chunkbuf:
+	g_free(chunkbuf);
+err_free_basename:
+	g_free(basename);
+err_zip_discard:
+	zip_discard(archive);
+
+	return SR_ERR;
+}
+
 static int receive(const struct sr_output *o, const struct sr_datafeed_packet *packet,
 		GString **out)
 {
 	struct out_context *outc;
 	const struct sr_datafeed_meta *meta;
 	const struct sr_datafeed_logic *logic;
+	const struct sr_datafeed_analog *analog;
 	const struct sr_config *src;
 	GSList *l;
 
@@ -291,19 +439,18 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 		if (ret != SR_OK)
 			return ret;
 		break;
+	case SR_DF_ANALOG:
+		if (!outc->zip_created) {
+			if ((ret = zip_create(o)) != SR_OK)
+				return ret;
+			outc->zip_created = TRUE;
+		}
+		analog = packet->payload;
+		ret = zip_append_analog(o, analog);
+		if (ret != SR_OK)
+			return ret;
+		break;
 	}
-
-	return SR_OK;
-}
-
-static int cleanup(struct sr_output *o)
-{
-	struct out_context *outc;
-
-	outc = o->priv;
-	g_free(outc->filename);
-	g_free(outc);
-	o->priv = NULL;
 
 	return SR_OK;
 }
@@ -318,6 +465,20 @@ static const struct sr_option *get_options(void)
 		options[0].def = g_variant_ref_sink(g_variant_new_string(""));
 
 	return options;
+}
+
+static int cleanup(struct sr_output *o)
+{
+	struct out_context *outc;
+
+	outc = o->priv;
+	g_variant_unref(options[0].def);
+	g_free(outc->analog_index_map);
+	g_free(outc->filename);
+	g_free(outc);
+	o->priv = NULL;
+
+	return SR_OK;
 }
 
 SR_PRIV struct sr_output_module output_srzip = {

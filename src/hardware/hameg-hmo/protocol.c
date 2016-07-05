@@ -18,18 +18,20 @@
  */
 
 #include <config.h>
+#include <math.h>
+#include <stdlib.h>
 #include "scpi.h"
 #include "protocol.h"
 
 static const char *hameg_scpi_dialect[] = {
-	[SCPI_CMD_GET_DIG_DATA]		    = ":POD%d:DATA?",
+	[SCPI_CMD_GET_DIG_DATA]		    = ":FORM UINT,8;:POD%d:DATA?",
 	[SCPI_CMD_GET_TIMEBASE]		    = ":TIM:SCAL?",
 	[SCPI_CMD_SET_TIMEBASE]		    = ":TIM:SCAL %s",
 	[SCPI_CMD_GET_COUPLING]		    = ":CHAN%d:COUP?",
 	[SCPI_CMD_SET_COUPLING]		    = ":CHAN%d:COUP %s",
 	[SCPI_CMD_GET_SAMPLE_RATE]	    = ":ACQ:SRAT?",
 	[SCPI_CMD_GET_SAMPLE_RATE_LIVE]	    = ":%s:DATA:POINTS?",
-	[SCPI_CMD_GET_ANALOG_DATA]	    = ":CHAN%d:DATA?",
+	[SCPI_CMD_GET_ANALOG_DATA]	    = ":FORM REAL,32;:CHAN%d:DATA?",
 	[SCPI_CMD_GET_VERTICAL_DIV]	    = ":CHAN%d:SCAL?",
 	[SCPI_CMD_SET_VERTICAL_DIV]	    = ":CHAN%d:SCAL %s",
 	[SCPI_CMD_GET_DIG_POD_STATE]	    = ":POD%d:STAT?",
@@ -45,6 +47,7 @@ static const char *hameg_scpi_dialect[] = {
 	[SCPI_CMD_SET_HORIZ_TRIGGERPOS]	    = ":TIM:POS %s",
 	[SCPI_CMD_GET_ANALOG_CHAN_STATE]    = ":CHAN%d:STAT?",
 	[SCPI_CMD_SET_ANALOG_CHAN_STATE]    = ":CHAN%d:STAT %d",
+	[SCPI_CMD_GET_PROBE_UNIT]	    = ":PROB%d:SET:ATT:UNIT?",
 };
 
 static const uint32_t hmo_devopts[] = {
@@ -65,10 +68,10 @@ static const uint32_t hmo_analog_devopts[] = {
 };
 
 static const char *hmo_coupling_options[] = {
-	"AC",
-	"ACL",
-	"DC",
-	"DCL",
+	"AC",  // AC with 50 Ohm termination (152x, 202x, 30xx, 1202)
+	"ACL", // AC with 1 MOhm termination
+	"DC",  // DC with 50 Ohm termination
+	"DCL", // DC with 1 MOhm termination
 	"GND",
 	NULL,
 };
@@ -76,6 +79,7 @@ static const char *hmo_coupling_options[] = {
 static const char *scope_trigger_slopes[] = {
 	"POS",
 	"NEG",
+	"EITH",
 	NULL,
 };
 
@@ -84,6 +88,9 @@ static const char *hmo_compact2_trigger_sources[] = {
 	"CH2",
 	"LINE",
 	"EXT",
+	"PATT",
+	"BUS1",
+	"BUS2",
 	"D0",
 	"D1",
 	"D2",
@@ -102,6 +109,9 @@ static const char *hmo_compact4_trigger_sources[] = {
 	"CH4",
 	"LINE",
 	"EXT",
+	"PATT",
+	"BUS1",
+	"BUS2",
 	"D0",
 	"D1",
 	"D2",
@@ -168,6 +178,8 @@ static const uint64_t hmo_vdivs[][2] = {
 	{ 2, 1 },
 	{ 5, 1 },
 	{ 10, 1 },
+	{ 20, 1 },
+	{ 50, 1 },
 };
 
 static const char *scope_analog_channel_names[] = {
@@ -198,7 +210,9 @@ static const char *scope_digital_channel_names[] = {
 
 static const struct scope_config scope_models[] = {
 	{
-		.name = {"HMO722", "HMO1022", "HMO1522", "HMO2022", NULL},
+		/* HMO2522/3032/3042/3052 support 16 digital channels but they're not supported yet. */
+		.name = {"HMO1002", "HMO722", "HMO1022", "HMO1522", "HMO2022", "HMO2522",
+				"HMO3032", "HMO3042", "HMO3052", NULL},
 		.analog_channels = 2,
 		.digital_channels = 8,
 		.digital_pods = 1,
@@ -228,7 +242,9 @@ static const struct scope_config scope_models[] = {
 		.scpi_dialect = &hameg_scpi_dialect,
 	},
 	{
-		.name = {"HMO724", "HMO1024", "HMO1524", "HMO2024", NULL},
+		/* HMO2524/3034/3044/3054 support 16 digital channels but they're not supported yet. */
+		.name = {"HMO724", "HMO1024", "HMO1524", "HMO2024", "HMO2524",
+				"HMO3034", "HMO3044", "HMO3054", NULL},
 		.analog_channels = 4,
 		.digital_channels = 8,
 		.digital_pods = 1,
@@ -265,7 +281,7 @@ static void scope_state_dump(const struct scope_config *config,
 	unsigned int i;
 	char *tmp;
 
-	for (i = 0; i < config->analog_channels; ++i) {
+	for (i = 0; i < config->analog_channels; i++) {
 		tmp = sr_voltage_string((*config->vdivs)[state->analog_channels[i].vdiv][0],
 					     (*config->vdivs)[state->analog_channels[i].vdiv][1]);
 		sr_info("State of analog channel  %d -> %s : %s (coupling) %s (vdiv) %2.2e (offset)",
@@ -274,12 +290,12 @@ static void scope_state_dump(const struct scope_config *config,
 			tmp, state->analog_channels[i].vertical_offset);
 	}
 
-	for (i = 0; i < config->digital_channels; ++i) {
+	for (i = 0; i < config->digital_channels; i++) {
 		sr_info("State of digital channel %d -> %s", i,
 			state->digital_channels[i] ? "On" : "Off");
 	}
 
-	for (i = 0; i < config->digital_pods; ++i) {
+	for (i = 0; i < config->digital_pods; i++) {
 		sr_info("State of digital POD %d -> %s", i,
 			state->digital_pods[i] ? "On" : "Off");
 	}
@@ -310,7 +326,7 @@ static int scope_state_get_array_option(struct sr_scpi_dev_inst *scpi,
 		return SR_ERR;
 	}
 
-	for (i = 0; (*array)[i]; ++i) {
+	for (i = 0; (*array)[i]; i++) {
 		if (!g_strcmp0(tmp, (*array)[i])) {
 			*result = i;
 			g_free(tmp);
@@ -327,15 +343,46 @@ static int scope_state_get_array_option(struct sr_scpi_dev_inst *scpi,
 	return SR_OK;
 }
 
+/**
+ * This function takes a value of the form "2.000E-03" and returns the index
+ * of an array where a matching pair was found.
+ *
+ * @param value The string to be parsed.
+ * @param array The array of s/f pairs.
+ * @param array_len The number of pairs in the array.
+ * @param result The index at which a matching pair was found.
+ *
+ * @return SR_ERR on any parsing error, SR_OK otherwise.
+ */
+static int array_float_get(gchar *value, const uint64_t array[][2],
+		int array_len, unsigned int *result)
+{
+	struct sr_rational rval;
+	struct sr_rational aval;
+
+	if (sr_parse_rational(value, &rval) != SR_OK)
+		return SR_ERR;
+
+	for (int i = 0; i < array_len; i++) {
+		sr_rational_set(&aval, array[i][0], array[i][1]);
+		if (sr_rational_eq(&rval, &aval)) {
+			*result = i;
+			return SR_OK;
+		}
+	}
+
+	return SR_ERR;
+}
+
 static int analog_channel_state_get(struct sr_scpi_dev_inst *scpi,
 				    const struct scope_config *config,
 				    struct scope_state *state)
 {
 	unsigned int i, j;
-	float tmp_float;
 	char command[MAX_COMMAND_SIZE];
+	char *tmp_str;
 
-	for (i = 0; i < config->analog_channels; ++i) {
+	for (i = 0; i < config->analog_channels; i++) {
 		g_snprintf(command, sizeof(command),
 			   (*config->scpi_dialect)[SCPI_CMD_GET_ANALOG_CHAN_STATE],
 			   i + 1);
@@ -348,19 +395,18 @@ static int analog_channel_state_get(struct sr_scpi_dev_inst *scpi,
 			   (*config->scpi_dialect)[SCPI_CMD_GET_VERTICAL_DIV],
 			   i + 1);
 
-		if (sr_scpi_get_float(scpi, command, &tmp_float) != SR_OK)
+		if (sr_scpi_get_string(scpi, command, &tmp_str) != SR_OK)
 			return SR_ERR;
-		for (j = 0; j < config->num_vdivs; j++) {
-			if (tmp_float == ((float) (*config->vdivs)[j][0] /
-					  (*config->vdivs)[j][1])) {
-				state->analog_channels[i].vdiv = j;
-				break;
-			}
-		}
-		if (j == config->num_vdivs) {
+
+		if (array_float_get(tmp_str, hmo_vdivs, ARRAY_SIZE(hmo_vdivs),
+				&j) != SR_OK) {
+			g_free(tmp_str);
 			sr_err("Could not determine array index for vertical div scale.");
 			return SR_ERR;
 		}
+
+		g_free(tmp_str);
+		state->analog_channels[i].vdiv = j;
 
 		g_snprintf(command, sizeof(command),
 			   (*config->scpi_dialect)[SCPI_CMD_GET_VERTICAL_OFFSET],
@@ -377,6 +423,19 @@ static int analog_channel_state_get(struct sr_scpi_dev_inst *scpi,
 		if (scope_state_get_array_option(scpi, command, config->coupling_options,
 					 &state->analog_channels[i].coupling) != SR_OK)
 			return SR_ERR;
+
+		g_snprintf(command, sizeof(command),
+			   (*config->scpi_dialect)[SCPI_CMD_GET_PROBE_UNIT],
+			   i + 1);
+
+		if (sr_scpi_get_string(scpi, command, &tmp_str) != SR_OK)
+			return SR_ERR;
+
+		if (tmp_str[0] == 'A')
+			state->analog_channels[i].probe_unit = 'A';
+		else
+			state->analog_channels[i].probe_unit = 'V';
+		g_free(tmp_str);
 	}
 
 	return SR_OK;
@@ -389,7 +448,7 @@ static int digital_channel_state_get(struct sr_scpi_dev_inst *scpi,
 	unsigned int i;
 	char command[MAX_COMMAND_SIZE];
 
-	for (i = 0; i < config->digital_channels; ++i) {
+	for (i = 0; i < config->digital_channels; i++) {
 		g_snprintf(command, sizeof(command),
 			   (*config->scpi_dialect)[SCPI_CMD_GET_DIG_CHAN_STATE],
 			   i);
@@ -399,7 +458,7 @@ static int digital_channel_state_get(struct sr_scpi_dev_inst *scpi,
 			return SR_ERR;
 	}
 
-	for (i = 0; i < config->digital_pods; ++i) {
+	for (i = 0; i < config->digital_pods; i++) {
 		g_snprintf(command, sizeof(command),
 			   (*config->scpi_dialect)[SCPI_CMD_GET_DIG_POD_STATE],
 			   i + 1);
@@ -430,7 +489,7 @@ SR_PRIV int hmo_update_sample_rate(const struct sr_dev_inst *sdi)
 	state = devc->model_state;
 	channel_found = FALSE;
 
-	for (i = 0; i < config->analog_channels; ++i) {
+	for (i = 0; i < config->analog_channels; i++) {
 		if (state->analog_channels[i].state) {
 			g_snprintf(chan_name, sizeof(chan_name), "CHAN%d", i + 1);
 			g_snprintf(tmp_str, sizeof(tmp_str),
@@ -481,6 +540,7 @@ SR_PRIV int hmo_scope_state_get(struct sr_dev_inst *sdi)
 	const struct scope_config *config;
 	float tmp_float;
 	unsigned int i;
+	char *tmp_str;
 
 	devc = sdi->priv;
 	config = devc->model_config;
@@ -499,17 +559,20 @@ SR_PRIV int hmo_scope_state_get(struct sr_dev_inst *sdi)
 			&tmp_float) != SR_OK)
 		return SR_ERR;
 
-	for (i = 0; i < config->num_timebases; i++) {
-		if (tmp_float == ((float) (*config->timebases)[i][0] /
-				  (*config->timebases)[i][1])) {
-			state->timebase = i;
-			break;
-		}
-	}
-	if (i == config->num_timebases) {
+	if (sr_scpi_get_string(sdi->conn,
+			(*config->scpi_dialect)[SCPI_CMD_GET_TIMEBASE],
+			&tmp_str) != SR_OK)
+		return SR_ERR;
+
+	if (array_float_get(tmp_str, hmo_timebases, ARRAY_SIZE(hmo_timebases),
+			&i) != SR_OK) {
+		g_free(tmp_str);
 		sr_err("Could not determine array index for time base.");
 		return SR_ERR;
 	}
+	g_free(tmp_str);
+
+	state->timebase = i;
 
 	if (sr_scpi_get_float(sdi->conn,
 			(*config->scpi_dialect)[SCPI_CMD_GET_HORIZ_TRIGGERPOS],
@@ -614,7 +677,7 @@ SR_PRIV int hmo_init_device(struct sr_dev_inst *sdi)
 	}
 
 	/* Add digital channel groups. */
-	for (i = 0; i < scope_models[model_index].digital_pods; ++i) {
+	for (i = 0; i < scope_models[model_index].digital_pods; i++) {
 		g_snprintf(tmp, 25, "POD%d", i);
 
 		devc->digital_groups[i] = g_malloc0(sizeof(struct sr_channel_group));
@@ -647,12 +710,17 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 	struct sr_channel *ch;
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
+	struct scope_state *state;
 	struct sr_datafeed_packet packet;
-	GArray *data;
-	struct sr_datafeed_analog_old analog;
+	GByteArray *data;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_datafeed_logic logic;
 
 	(void)fd;
+	(void)revents;
 
 	data = NULL;
 
@@ -662,16 +730,21 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 	if (!(devc = sdi->priv))
 		return TRUE;
 
+	/* Although this is correct in general, the USBTMC libusb implementation
+	 * currently does not generate an event prior to the first read. Often
+	 * it is ok to start reading just after the 50ms timeout. See bug #785.
 	if (revents != G_IO_IN)
 		return TRUE;
+	*/
 
 	ch = devc->current_channel->data;
+	state = devc->model_state;
 
 	switch (ch->type) {
 	case SR_CHANNEL_ANALOG:
-		if (sr_scpi_get_floatv(sdi->conn, NULL, &data) != SR_OK) {
+		if (sr_scpi_get_block(sdi->conn, NULL, &data) != SR_OK) {
 			if (data)
-				g_array_free(data, TRUE);
+				g_byte_array_free(data, TRUE);
 
 			return TRUE;
 		}
@@ -679,21 +752,42 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 		packet.type = SR_DF_FRAME_BEGIN;
 		sr_session_send(sdi, &packet);
 
-		analog.channels = g_slist_append(NULL, ch);
-		analog.num_samples = data->len;
-		analog.data = (float *) data->data;
-		analog.mq = SR_MQ_VOLTAGE;
-		analog.unit = SR_UNIT_VOLT;
-		analog.mqflags = 0;
-		packet.type = SR_DF_ANALOG_OLD;
+		packet.type = SR_DF_ANALOG;
+
+		analog.data = data->data;
+		analog.num_samples = data->len / sizeof(float);
+		analog.encoding = &encoding;
+		analog.meaning = &meaning;
+		analog.spec = &spec;
+
+		encoding.unitsize = sizeof(float);
+		encoding.is_signed = TRUE;
+		encoding.is_float = TRUE;
+		encoding.is_bigendian = FALSE;
+		encoding.digits = 0;
+		encoding.is_digits_decimal = FALSE;
+		encoding.scale.p = 1;
+		encoding.scale.q = 1;
+		encoding.offset.p = 0;
+		encoding.offset.q = 1;
+		if (state->analog_channels[ch->index].probe_unit == 'V') {
+			meaning.mq = SR_MQ_VOLTAGE;
+			meaning.unit = SR_UNIT_VOLT;
+		} else {
+			meaning.mq = SR_MQ_CURRENT;
+			meaning.unit = SR_UNIT_AMPERE;
+		}
+		meaning.mqflags = 0;
+		meaning.channels = g_slist_append(NULL, ch);
+		spec.spec_digits = 0;
 		packet.payload = &analog;
-		sr_session_send(cb_data, &packet);
-		g_slist_free(analog.channels);
-		g_array_free(data, TRUE);
+		sr_session_send(sdi, &packet);
+		g_slist_free(meaning.channels);
+		g_byte_array_free(data, TRUE);
 		data = NULL;
 		break;
 	case SR_CHANNEL_LOGIC:
-		if (sr_scpi_get_uint8v(sdi->conn, NULL, &data) != SR_OK) {
+		if (sr_scpi_get_block(sdi->conn, NULL, &data) != SR_OK) {
 			g_free(data);
 			return TRUE;
 		}
@@ -706,8 +800,8 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 		logic.data = data->data;
 		packet.type = SR_DF_LOGIC;
 		packet.payload = &logic;
-		sr_session_send(cb_data, &packet);
-		g_array_free(data, TRUE);
+		sr_session_send(sdi, &packet);
+		g_byte_array_free(data, TRUE);
 		data = NULL;
 		break;
 	default:
@@ -722,7 +816,7 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 		devc->current_channel = devc->current_channel->next;
 		hmo_request_data(sdi);
 	} else if (++devc->num_frames == devc->frame_limit) {
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
+		sdi->driver->dev_acquisition_stop(sdi);
 	} else {
 		devc->current_channel = devc->enabled_channels;
 		hmo_request_data(sdi);

@@ -25,25 +25,30 @@ static void handle_packet(const uint8_t *buf, struct sr_dev_inst *sdi)
 	float floatval;
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 
 	devc = sdi->priv;
 
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+
 	analog.num_samples = 1;
-	analog.mq = -1;
+	analog.meaning->mq = 0;
 
 	if (brymen_parse(buf, &floatval, &analog, NULL) != SR_OK)
 		return;
 	analog.data = &floatval;
 
-	analog.channels = sdi->channels;
+	analog.meaning->channels = sdi->channels;
 
-	if (analog.mq != -1) {
+	if (analog.meaning->mq != 0) {
 		/* Got a measurement. */
-		packet.type = SR_DF_ANALOG_OLD;
+		packet.type = SR_DF_ANALOG;
 		packet.payload = &analog;
-		sr_session_send(devc->cb_data, &packet);
-		devc->num_samples++;
+		sr_session_send(sdi, &packet);
+		sr_sw_limits_update_samples_read(&devc->sw_limits, 1);
 	}
 }
 
@@ -114,7 +119,6 @@ SR_PRIV int brymen_dmm_receive_data(int fd, int revents, void *cb_data)
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	int ret;
-	int64_t time;
 
 	(void)fd;
 
@@ -137,20 +141,8 @@ SR_PRIV int brymen_dmm_receive_data(int fd, int revents, void *cb_data)
 		}
 	}
 
-	if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-		sr_info("Requested number of samples reached, stopping.");
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-		return TRUE;
-	}
-
-	if (devc->limit_msec) {
-		time = (g_get_monotonic_time() - devc->starttime) / 1000;
-		if (time > (int64_t)devc->limit_msec) {
-			sr_info("Requested time limit reached, stopping.");
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-			return TRUE;
-		}
-	}
+	if (sr_sw_limits_check(&devc->sw_limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	return TRUE;
 }

@@ -22,10 +22,8 @@
 #include <time.h>
 #include <sys/timerfd.h>
 
-SR_PRIV struct sr_dev_driver baylibre_acme_driver_info;
-
 static const uint32_t devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
@@ -53,24 +51,14 @@ static const uint64_t samplerates[] = {
 	SR_HZ(1),
 };
 
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
-	GSList *devices;
 	gboolean status;
 	int i;
 
 	(void)options;
-
-	drvc = di->context;
-	devices = NULL;
 
 	devc = g_malloc0(sizeof(struct dev_context));
 	devc->samplerate = SR_HZ(10);
@@ -79,7 +67,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup("BayLibre");
 	sdi->model = g_strdup("ACME");
-	sdi->driver = di;
 	sdi->priv = devc;
 
 	status = bl_acme_is_sane();
@@ -130,10 +117,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	if (!sdi->channel_groups)
 		goto err_out;
 
-	devices = g_slist_append(devices, sdi);
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-
-	return devices;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 
 err_out:
 	g_free(devc);
@@ -142,21 +126,10 @@ err_out:
 	return NULL;
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	(void)sdi;
 
-	/* Nothing to do here. */
 	sdi->status = SR_ST_ACTIVE;
 
 	return SR_OK;
@@ -166,15 +139,7 @@ static int dev_close(struct sr_dev_inst *sdi)
 {
 	(void)sdi;
 
-	/* Nothing to do here. */
 	sdi->status = SR_ST_INACTIVE;
-
-	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	dev_clear(di);
 
 	return SR_OK;
 }
@@ -193,10 +158,8 @@ static int config_get(uint32_t key, GVariant **data,
 	ret = SR_OK;
 	switch (key) {
 	case SR_CONF_LIMIT_SAMPLES:
-		*data = g_variant_new_uint64(devc->limit_samples);
-		break;
 	case SR_CONF_LIMIT_MSEC:
-		*data = g_variant_new_uint64(devc->limit_msec);
+		ret = sr_sw_limits_config_get(&devc->limits, key, data);
 		break;
 	case SR_CONF_SAMPLERATE:
 		*data = g_variant_new_uint64(devc->samplerate);
@@ -238,12 +201,8 @@ static int config_set(uint32_t key, GVariant *data,
 	ret = SR_OK;
 	switch (key) {
 	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		devc->limit_msec = 0;
-		break;
 	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data) * 1000;
-		devc->limit_samples = 0;
+		ret = sr_sw_limits_config_set(&devc->limits, key, data);
 		break;
 	case SR_CONF_SAMPLERATE:
 		samplerate = g_variant_get_uint64(data);
@@ -349,15 +308,13 @@ static int dev_acquisition_open(const struct sr_dev_inst *sdi)
 	return 0;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct itimerspec tspec = {
 		.it_interval = { 0, 0 },
 		.it_value = { 0, 0 }
 	};
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -366,7 +323,6 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR;
 
 	devc = sdi->priv;
-	devc->samples_read = 0;
 	devc->samples_missed = 0;
 	devc->timer_fd = timerfd_create(CLOCK_MONOTONIC, 0);
 	if (devc->timer_fd < 0) {
@@ -392,19 +348,15 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	sr_session_source_add_channel(sdi->session, devc->channel,
 		G_IO_IN | G_IO_ERR, 1000, bl_acme_receive_data, (void *)sdi);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
-	devc->start_time = g_get_monotonic_time();
+	std_session_send_df_header(sdi);
+	sr_sw_limits_acquisition_start(&devc->limits);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
 	struct dev_context *devc;
-
-	(void)cb_data;
 
 	devc = sdi->priv;
 
@@ -417,9 +369,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	g_io_channel_unref(devc->channel);
 	devc->channel = NULL;
 
-	/* Send last packet. */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	if (devc->samples_missed > 0)
 		sr_warn("%" PRIu64 " samples missed", devc->samples_missed);
@@ -427,15 +377,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver baylibre_acme_driver_info = {
+static struct sr_dev_driver baylibre_acme_driver_info = {
 	.name = "baylibre-acme",
 	.longname = "BayLibre ACME (Another Cute Measurement Equipment)",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = dev_clear,
+	.dev_list = std_dev_list,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
@@ -445,3 +394,4 @@ SR_PRIV struct sr_dev_driver baylibre_acme_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(baylibre_acme_driver_info);

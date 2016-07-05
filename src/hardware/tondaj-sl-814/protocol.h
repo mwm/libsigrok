@@ -29,18 +29,7 @@
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
-	/** The current sampling limit (in number of samples). */
-	uint64_t limit_samples;
-
-	/** The current sampling limit (in ms). */
-	uint64_t limit_msec;
-
-	/** Opaque pointer passed in by the frontend. */
-	void *cb_data;
-
-	/** The current number of already received samples. */
-	uint64_t num_samples;
-
+	struct sr_sw_limits limits;
 	int state;
 
 	uint8_t buf[4];

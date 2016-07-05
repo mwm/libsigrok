@@ -113,13 +113,13 @@ struct channel_group_spec {
 };
 
 struct pps_channel {
-	int mq;
+	enum sr_mq mq;
 	unsigned int hw_output_idx;
 	const char *hwname;
 };
 
 struct pps_channel_instance {
-	int mq;
+	enum sr_mq mq;
 	int command;
 	const char *prefix;
 };
@@ -139,9 +139,6 @@ struct dev_context {
 	/* Model-specific information */
 	const struct scpi_pps *device;
 
-	/* Acquisition settings */
-	void *cb_data;
-
 	/* Operational state */
 	gboolean beeper_was_set;
 	struct channel_spec *channels;
@@ -154,7 +151,6 @@ struct dev_context {
 SR_PRIV extern unsigned int num_pps_profiles;
 SR_PRIV extern const struct scpi_pps pps_profiles[];
 
-SR_PRIV const char *get_vendor(const char *raw_vendor);
 SR_PRIV int select_channel(const struct sr_dev_inst *sdi, struct sr_channel *ch);
 SR_PRIV int scpi_pps_receive_data(int fd, int revents, void *cb_data);
 

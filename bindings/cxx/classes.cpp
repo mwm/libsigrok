@@ -101,7 +101,7 @@ SR_PRIV int ResourceReader::close_callback(struct sr_resource *res,
 	return SR_OK;
 }
 
-SR_PRIV ssize_t ResourceReader::read_callback(const struct sr_resource *res,
+SR_PRIV gssize ResourceReader::read_callback(const struct sr_resource *res,
 		void *buf, size_t count, void *cb_data) noexcept
 {
 	try {
@@ -128,19 +128,19 @@ Context::Context() :
 	if (struct sr_dev_driver **driver_list = sr_driver_list(_structure))
 		for (int i = 0; driver_list[i]; i++) {
 			unique_ptr<Driver> driver {new Driver{driver_list[i]}};
-			_drivers.emplace(driver->name(), move(driver));
+			_drivers.insert(make_pair(driver->name(), move(driver)));
 		}
 
 	if (const struct sr_input_module **input_list = sr_input_list())
 		for (int i = 0; input_list[i]; i++) {
 			unique_ptr<InputFormat> input {new InputFormat{input_list[i]}};
-			_input_formats.emplace(input->name(), move(input));
+			_input_formats.insert(make_pair(input->name(), move(input)));
 		}
 
 	if (const struct sr_output_module **output_list = sr_output_list())
 		for (int i = 0; output_list[i]; i++) {
 			unique_ptr<OutputFormat> output {new OutputFormat{output_list[i]}};
-			_output_formats.emplace(output->name(), move(output));
+			_output_formats.insert(make_pair(output->name(), move(output)));
 		}
 }
 
@@ -161,7 +161,7 @@ map<string, shared_ptr<Driver>> Context::drivers()
 	{
 		const auto &name = entry.first;
 		const auto &driver = entry.second;
-		result.emplace(name, driver->share_owned_by(shared_from_this()));
+		result.insert({name, driver->share_owned_by(shared_from_this())});
 	}
 	return result;
 }
@@ -173,7 +173,7 @@ map<string, shared_ptr<InputFormat>> Context::input_formats()
 	{
 		const auto &name = entry.first;
 		const auto &input_format = entry.second;
-		result.emplace(name, input_format->share_owned_by(shared_from_this()));
+		result.insert({name, input_format->share_owned_by(shared_from_this())});
 	}
 	return result;
 }
@@ -185,7 +185,7 @@ map<string, shared_ptr<OutputFormat>> Context::output_formats()
 	{
 		const auto &name = entry.first;
 		const auto &output_format = entry.second;
-		result.emplace(name, output_format->share_owned_by(shared_from_this()));
+		result.insert({name, output_format->share_owned_by(shared_from_this())});
 	}
 	return result;
 }
@@ -317,15 +317,39 @@ shared_ptr<Packet> Context::create_analog_packet(
 {
 	auto analog = g_new0(struct sr_datafeed_analog, 1);
 	auto meaning = g_new0(struct sr_analog_meaning, 1);
+	auto encoding = g_new0(struct sr_analog_encoding, 1);
+	auto spec = g_new0(struct sr_analog_spec, 1);
 
 	analog->meaning = meaning;
 
 	for (const auto &channel : channels)
 		meaning->channels = g_slist_append(meaning->channels, channel->_structure);
-	analog->num_samples = num_samples;
 	meaning->mq = static_cast<sr_mq>(mq->id());
 	meaning->unit = static_cast<sr_unit>(unit->id());
 	meaning->mqflags = static_cast<sr_mqflag>(QuantityFlag::mask_from_flags(move(mqflags)));
+
+	analog->encoding = encoding;
+
+	encoding->unitsize = sizeof(float);
+	encoding->is_signed = TRUE;
+	encoding->is_float = TRUE;
+#ifdef WORDS_BIGENDIAN
+	encoding->is_bigendian = TRUE;
+#else
+	encoding->is_bigendian = FALSE;
+#endif
+	encoding->digits = 0;
+	encoding->is_digits_decimal = FALSE;
+	encoding->scale.p = 1;
+	encoding->scale.q = 1;
+	encoding->offset.p = 0;
+	encoding->offset.q = 1;
+
+	analog->spec = spec;
+
+	spec->spec_digits = 0;
+
+	analog->num_samples = num_samples;
 	analog->data = data_pointer;
 	auto packet = g_new(struct sr_datafeed_packet, 1);
 	packet->type = SR_DF_ANALOG;
@@ -406,6 +430,18 @@ string Driver::long_name() const
 	return valid_string(_structure->longname);
 }
 
+set<const ConfigKey *> Driver::scan_options() const
+{
+	GArray *opts = sr_driver_scan_options_list(_structure);
+	set<const ConfigKey *> result;
+	if (opts) {
+		for (guint i = 0; i < opts->len; i++)
+			result.insert(ConfigKey::get(g_array_index(opts, uint32_t, i)));
+		g_array_free(opts, TRUE);
+	}
+	return result;
+}
+
 vector<shared_ptr<HardwareDevice>> Driver::scan(
 	map<const ConfigKey *, Glib::VariantBase> options)
 {
@@ -466,6 +502,22 @@ Configurable::~Configurable()
 {
 }
 
+set<const ConfigKey *> Configurable::config_keys() const
+{
+	GArray *opts;
+	set<const ConfigKey *> result;
+
+	opts = sr_dev_options(config_driver, config_sdi, config_channel_group);
+
+	if (opts) {
+		for (guint i = 0; i < opts->len; i++)
+			result.insert(ConfigKey::get(g_array_index(opts, uint32_t, i)));
+		g_array_free(opts, TRUE);
+	}
+
+	return result;
+}
+
 Glib::VariantBase Configurable::config_get(const ConfigKey *key) const
 {
 	GVariant *data;
@@ -482,6 +534,29 @@ void Configurable::config_set(const ConfigKey *key, const Glib::VariantBase &val
 		key->id(), const_cast<GVariant*>(value.gobj())));
 }
 
+set<const Capability *> Configurable::config_capabilities(const ConfigKey *key) const
+{
+	int caps = sr_dev_config_capabilities_list(config_sdi,
+				config_channel_group, key->id());
+
+	set<const Capability *> result;
+
+	for (auto cap: Capability::values())
+		if (caps & cap->id())
+			result.insert(cap);
+
+	return result;
+}
+
+bool Configurable::config_check(const ConfigKey *key,
+	const Capability *capability) const
+{
+	int caps = sr_dev_config_capabilities_list(config_sdi,
+				config_channel_group, key->id());
+
+	return (caps & capability->id());
+}
+
 Glib::VariantContainerBase Configurable::config_list(const ConfigKey *key) const
 {
 	GVariant *data;
@@ -489,66 +564,6 @@ Glib::VariantContainerBase Configurable::config_list(const ConfigKey *key) const
 		config_driver, config_sdi, config_channel_group,
 		key->id(), &data));
 	return Glib::VariantContainerBase(data);
-}
-
-map<const ConfigKey *, set<Capability>> Configurable::config_keys(const ConfigKey *key)
-{
-	GVariant *gvar_opts;
-	gsize num_opts;
-	const uint32_t *opts;
-	map<const ConfigKey *, set<Capability>> result;
-
-	check(sr_config_list(
-		config_driver, config_sdi, config_channel_group,
-		key->id(), &gvar_opts));
-
-	opts = static_cast<const uint32_t *>(g_variant_get_fixed_array(
-		gvar_opts, &num_opts, sizeof(uint32_t)));
-
-	for (gsize i = 0; i < num_opts; i++)
-	{
-		auto key = ConfigKey::get(opts[i] & SR_CONF_MASK);
-		set<Capability> capabilities;
-		if (opts[i] & SR_CONF_GET)
-			capabilities.insert(GET);
-		if (opts[i] & SR_CONF_SET)
-			capabilities.insert(SET);
-		if (opts[i] & SR_CONF_LIST)
-			capabilities.insert(LIST);
-		result[key] = capabilities;
-	}
-
-	g_variant_unref(gvar_opts);
-
-	return result;
-}
-
-bool Configurable::config_check(const ConfigKey *key,
-	const ConfigKey *index_key) const
-{
-	GVariant *gvar_opts;
-	gsize num_opts;
-	const uint32_t *opts;
-
-	if (sr_config_list(config_driver, config_sdi, config_channel_group,
-			index_key->id(), &gvar_opts) != SR_OK)
-		return false;
-
-	opts = static_cast<const uint32_t *>(g_variant_get_fixed_array(
-		gvar_opts, &num_opts, sizeof(uint32_t)));
-
-	for (gsize i = 0; i < num_opts; i++)
-	{
-		if ((opts[i] & SR_CONF_MASK) == unsigned(key->id()))
-		{
-			g_variant_unref(gvar_opts);
-			return true;
-		}
-	}
-
-	g_variant_unref(gvar_opts);
-
-	return false;
 }
 
 Device::Device(struct sr_dev_inst *structure) :
@@ -559,14 +574,14 @@ Device::Device(struct sr_dev_inst *structure) :
 	{
 		auto *const ch = static_cast<struct sr_channel *>(entry->data);
 		unique_ptr<Channel> channel {new Channel{ch}};
-		_channels.emplace(ch, move(channel));
+		_channels.insert(make_pair(ch, move(channel)));
 	}
 
 	for (GSList *entry = sr_dev_inst_channel_groups_get(structure); entry; entry = entry->next)
 	{
 		auto *const cg = static_cast<struct sr_channel_group *>(entry->data);
 		unique_ptr<ChannelGroup> group {new ChannelGroup{this, cg}};
-		_channel_groups.emplace(group->name(), move(group));
+		_channel_groups.insert(make_pair(group->name(), move(group)));
 	}
 }
 
@@ -621,7 +636,7 @@ Device::channel_groups()
 	{
 		const auto &name = entry.first;
 		const auto &channel_group = entry.second;
-		result.emplace(name, channel_group->share_owned_by(get_shared_from_this()));
+		result.insert({name, channel_group->share_owned_by(get_shared_from_this())});
 	}
 	return result;
 }
@@ -680,7 +695,7 @@ shared_ptr<Channel> UserDevice::add_channel(unsigned int index,
 	GSList *const last = g_slist_last(sr_dev_inst_channels_get(Device::_structure));
 	auto *const ch = static_cast<struct sr_channel *>(last->data);
 	unique_ptr<Channel> channel {new Channel{ch}};
-	_channels.emplace(ch, move(channel));
+	_channels.insert(make_pair(ch, move(channel)));
 	return get_channel(ch);
 }
 
@@ -903,7 +918,7 @@ Session::Session(shared_ptr<Context> context, string filename) :
 	for (GSList *dev = dev_list; dev; dev = dev->next) {
 		auto *const sdi = static_cast<struct sr_dev_inst *>(dev->data);
 		unique_ptr<SessionDevice> device {new SessionDevice{sdi}};
-		_owned_devices.emplace(sdi, move(device));
+		_owned_devices.insert(make_pair(sdi, move(device)));
 	}
 	_context->_session = this;
 }
@@ -1140,7 +1155,7 @@ map<const ConfigKey *, Glib::VariantBase> Meta::config() const
 	map<const ConfigKey *, Glib::VariantBase> result;
 	for (auto l = _structure->config; l; l = l->next) {
 		auto *const config = static_cast<struct sr_config *>(l->data);
-		result[ConfigKey::get(config->key)] = Glib::VariantBase(config->data);
+		result[ConfigKey::get(config->key)] = Glib::VariantBase(config->data, true);
 	}
 	return result;
 }
@@ -1267,7 +1282,7 @@ map<string, shared_ptr<Option>> InputFormat::options()
 			shared_ptr<Option> opt {
 				new Option{options[i], option_array},
 				default_delete<Option>{}};
-			result.emplace(opt->id(), move(opt));
+			result.insert({opt->id(), move(opt)});
 		}
 	}
 	return result;
@@ -1312,6 +1327,11 @@ void Input::send(void *data, size_t length)
 void Input::end()
 {
 	check(sr_input_end(_structure));
+}
+
+void Input::reset()
+{
+	check(sr_input_reset(_structure));
 }
 
 Input::~Input()
@@ -1416,7 +1436,7 @@ map<string, shared_ptr<Option>> OutputFormat::options()
 			shared_ptr<Option> opt {
 				new Option{options[i], option_array},
 				default_delete<Option>{}};
-			result.emplace(opt->id(), move(opt));
+			result.insert({opt->id(), move(opt)});
 		}
 	}
 	return result;

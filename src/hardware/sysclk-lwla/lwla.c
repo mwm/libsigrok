@@ -20,12 +20,12 @@
 #include <config.h>
 #include <glib/gstdio.h>
 #include <libsigrok/libsigrok.h>
-#include "libsigrok-internal.h"
-#include "protocol.h"
+#include <libsigrok-internal.h>
 #include "lwla.h"
+#include "protocol.h"
 
-#define BITSTREAM_MAX_SIZE    (256 * 1024) /* bitstream size limit for safety */
-#define BITSTREAM_HEADER_SIZE 4            /* transfer header size in bytes */
+#define BITSTREAM_MAX_SIZE    (256 * 1024) /* Bitstream size limit for safety */
+#define BITSTREAM_HEADER_SIZE 4            /* Transfer header size in bytes */
 
 /* Load a bitstream file into memory. Returns a newly allocated array
  * consisting of a 32-bit length field followed by the bitstream data.
@@ -81,9 +81,7 @@ SR_PRIV int lwla_send_bitstream(struct sr_context *ctx,
 				const char *name)
 {
 	unsigned char *stream;
-	int ret;
-	int length;
-	int xfer_len;
+	int ret, length, xfer_len;
 
 	if (!ctx || !usb || !name)
 		return SR_ERR_BUG;
@@ -95,7 +93,7 @@ SR_PRIV int lwla_send_bitstream(struct sr_context *ctx,
 	sr_info("Downloading FPGA bitstream '%s'.", name);
 
 	/* Transfer the entire bitstream in one URB. */
-	ret = libusb_bulk_transfer(usb->devhdl, EP_BITSTREAM,
+	ret = libusb_bulk_transfer(usb->devhdl, EP_CONFIG,
 				   stream, length, &xfer_len, USB_TIMEOUT_MS);
 	g_free(stream);
 
@@ -120,8 +118,7 @@ SR_PRIV int lwla_send_bitstream(struct sr_context *ctx,
 SR_PRIV int lwla_send_command(const struct sr_usb_dev_inst *usb,
 			      const uint16_t *command, int cmd_len)
 {
-	int ret;
-	int xfer_len;
+	int ret, xfer_len;
 
 	if (!usb || !command || cmd_len <= 0)
 		return SR_ERR_BUG;
@@ -140,80 +137,52 @@ SR_PRIV int lwla_send_command(const struct sr_usb_dev_inst *usb,
 		       LWLA_TO_UINT16(command[0]), xfer_len, cmd_len * 2);
 		return SR_ERR;
 	}
+
 	return SR_OK;
 }
 
 SR_PRIV int lwla_receive_reply(const struct sr_usb_dev_inst *usb,
-			       uint32_t *reply, int reply_len, int expect_len)
+			       void *reply, int buf_size, int *xfer_len)
 {
 	int ret;
-	int xfer_len;
 
-	if (!usb || !reply || reply_len <= 0)
+	if (!usb || !reply || buf_size <= 0)
 		return SR_ERR_BUG;
 
-	xfer_len = 0;
-	ret = libusb_bulk_transfer(usb->devhdl, EP_REPLY,
-				   (unsigned char *)reply, reply_len * 4,
-				   &xfer_len, USB_TIMEOUT_MS);
+	ret = libusb_bulk_transfer(usb->devhdl, EP_REPLY, reply, buf_size,
+				   xfer_len, USB_TIMEOUT_MS);
 	if (ret != 0) {
 		sr_dbg("Failed to receive reply: %s.", libusb_error_name(ret));
 		return SR_ERR;
 	}
-	if (xfer_len != expect_len * 4) {
-		sr_dbg("Failed to receive reply: incorrect length %d != %d.",
-		       xfer_len, expect_len * 4);
-		return SR_ERR;
-	}
+
 	return SR_OK;
 }
 
 SR_PRIV int lwla_read_reg(const struct sr_usb_dev_inst *usb,
 			  uint16_t reg, uint32_t *value)
 {
-	int ret;
+	int xfer_len, ret;
 	uint16_t command[2];
-	uint32_t reply[128]; /* full EP buffer to avoid overflows */
+	uint32_t reply[128]; /* Full EP buffer to avoid overflows. */
 
 	command[0] = LWLA_WORD(CMD_READ_REG);
 	command[1] = LWLA_WORD(reg);
 
 	ret = lwla_send_command(usb, command, ARRAY_SIZE(command));
-
 	if (ret != SR_OK)
 		return ret;
 
-	ret = lwla_receive_reply(usb, reply, ARRAY_SIZE(reply), 1);
-
-	if (ret == SR_OK)
-		*value = LWLA_TO_UINT32(reply[0]);
-
-	return ret;
-}
-
-SR_PRIV int lwla_read_long_reg(const struct sr_usb_dev_inst *usb,
-			       uint32_t addr, uint64_t *value)
-{
-	uint32_t low, high, dummy;
-	int ret;
-
-	ret = lwla_write_reg(usb, REG_LONG_ADDR, addr);
+	ret = lwla_receive_reply(usb, reply, sizeof(reply), &xfer_len);
 	if (ret != SR_OK)
 		return ret;
 
-	ret = lwla_read_reg(usb, REG_LONG_STROBE, &dummy);
-	if (ret != SR_OK)
-		return ret;
-
-	ret = lwla_read_reg(usb, REG_LONG_HIGH, &high);
-	if (ret != SR_OK)
-		return ret;
-
-	ret = lwla_read_reg(usb, REG_LONG_LOW, &low);
-	if (ret != SR_OK)
-		return ret;
-
-	*value = ((uint64_t)high << 32) | low;
+	if (xfer_len != 4) {
+		sr_dbg("Invalid register read response of length %d.",
+		       xfer_len);
+		return SR_ERR;
+	}
+	*value = LWLA_TO_UINT32(reply[0]);
 
 	return SR_OK;
 }
@@ -232,14 +201,13 @@ SR_PRIV int lwla_write_reg(const struct sr_usb_dev_inst *usb,
 }
 
 SR_PRIV int lwla_write_regs(const struct sr_usb_dev_inst *usb,
-			    const struct regval_pair *regvals, int count)
+			    const struct regval *regvals, int count)
 {
-	int i;
-	int ret;
+	int i, ret;
 
 	ret = SR_OK;
 
-	for (i = 0; i < count; ++i) {
+	for (i = 0; i < count; i++) {
 		ret = lwla_write_reg(usb, regvals[i].reg, regvals[i].val);
 
 		if (ret != SR_OK)

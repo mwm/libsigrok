@@ -48,25 +48,24 @@ static const uint32_t devopts[] = {
 	SR_CONF_OVER_VOLTAGE_PROTECTION_ENABLED | SR_CONF_GET | SR_CONF_SET,
 };
 
-static const struct korad_kdxxxxp_model models[] = {
+static const struct korad_kaxxxxp_model models[] = {
 	/* Device enum, vendor, model, ID reply, channels, voltage, current */
-	{VELLEMAN_LABPS_3005D, "Velleman", "LABPS3005D",
+	{VELLEMAN_PS3005D, "Velleman", "PS3005D",
+		"VELLEMANPS3005DV2.0", 1, {0, 31, 0.01}, {0, 5, 0.001}},
+	{VELLEMAN_LABPS3005D, "Velleman", "LABPS3005D",
 		"VELLEMANLABPS3005DV2.0", 1, {0, 31, 0.01}, {0, 5, 0.001}},
-	{0, NULL, NULL, NULL, 0, {0, 0, 0}, {0, 0, 0}}
+	{KORAD_KA3005P, "Korad", "KA3005P",
+		"KORADKA3005PV2.0", 1, {0, 31, 0.01}, {0, 5, 0.001}},
+	/* Sometimes the KA3005P has an extra 0x01 after the ID. */
+	{KORAD_KA3005P_0X01, "Korad", "KA3005P",
+		"KORADKA3005PV2.0\x01", 1, {0, 31, 0.01}, {0, 5, 0.001}},
+	ALL_ZERO
 };
-
-SR_PRIV struct sr_dev_driver korad_kdxxxxp_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct dev_context *devc;
-	GSList *devices, *l;
+	GSList *l;
 	struct sr_dev_inst *sdi;
 	struct sr_config *src;
 	const char *conn, *serialcomm;
@@ -75,11 +74,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	int i, model_id;
 	unsigned int len;
 
-	devices = NULL;
 	conn = NULL;
 	serialcomm = NULL;
-	drvc = di->context;
-	drvc->instances = NULL;
 
 	for (l = options; l; l = l->next) {
 		src = l->data;
@@ -115,11 +111,11 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	}
 	memset(&reply, 0, sizeof(reply));
 	sr_dbg("Want max %d bytes.", len);
-	if ((korad_kdxxxxp_send_cmd(serial, "*IDN?") < 0))
+	if ((korad_kaxxxxp_send_cmd(serial, "*IDN?") < 0))
 		return NULL;
 
 	/* i is used here for debug purposes only. */
-	if ((i = korad_kdxxxxp_read_chars(serial, len, reply)) < 0)
+	if ((i = korad_kaxxxxp_read_chars(serial, len, reply)) < 0)
 		return NULL;
 	sr_dbg("Received: %d, %s", i, reply);
 	model_id = -1;
@@ -131,7 +127,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sr_err("Unknown model ID '%s' detected, aborting.", reply);
 		return NULL;
 	}
-	sr_dbg("Found: %s %s", models[model_id].vendor, models[model_id].name);
+	sr_dbg("Found: %s %s (idx %d, ID '%s').", models[model_id].vendor,
+		models[model_id].name, model_id, models[model_id].id);
 
 	/* Init device instance, etc. */
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
@@ -140,27 +137,23 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->model = g_strdup(models[model_id].name);
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
-	sdi->driver = di;
 
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "CH1");
 
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 	devc->model = &models[model_id];
 	devc->reply[5] = 0;
 	devc->req_sent_at = 0;
 	sdi->priv = devc;
 
 	/* Get current status of device. */
-	if (korad_kdxxxxp_get_all_values(serial, devc) < 0)
+	if (korad_kaxxxxp_get_all_values(serial, devc) < 0)
 		goto exit_err;
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
 
 	serial_close(serial);
-	if (!devices)
-		sr_serial_dev_inst_free(serial);
 
-	return devices;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 
 exit_err:
 	sr_dev_inst_free(sdi);
@@ -168,22 +161,6 @@ exit_err:
 	sr_dbg("Scan failed.");
 
 	return NULL;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	dev_clear(di);
-	return SR_OK;
 }
 
 static int config_get(uint32_t key, GVariant **data,
@@ -199,12 +176,7 @@ static int config_get(uint32_t key, GVariant **data,
 	devc = sdi->priv;
 
 	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		*data = g_variant_new_uint64(devc->limit_samples);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		*data = g_variant_new_uint64(devc->limit_msec);
-		break;
+		return sr_sw_limits_config_get(&devc->limits, key, data);
 	case SR_CONF_VOLTAGE:
 		*data = g_variant_new_double(devc->voltage);
 		break;
@@ -253,22 +225,15 @@ static int config_set(uint32_t key, GVariant *data,
 
 	switch (key) {
 	case SR_CONF_LIMIT_MSEC:
-		if (g_variant_get_uint64(data) == 0)
-			return SR_ERR_ARG;
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
 	case SR_CONF_LIMIT_SAMPLES:
-		if (g_variant_get_uint64(data) == 0)
-			return SR_ERR_ARG;
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
+		return sr_sw_limits_config_set(&devc->limits, key, data);
 	case SR_CONF_VOLTAGE_TARGET:
 		dval = g_variant_get_double(data);
 		if (dval < devc->model->voltage[0] || dval > devc->model->voltage[1])
 			return SR_ERR_ARG;
 		devc->voltage_max = dval;
-		devc->target = KDXXXXP_VOLTAGE_MAX;
-		if (korad_kdxxxxp_set_value(sdi->conn, devc) < 0)
+		devc->target = KAXXXXP_VOLTAGE_MAX;
+		if (korad_kaxxxxp_set_value(sdi->conn, devc) < 0)
 			return SR_ERR;
 		break;
 	case SR_CONF_CURRENT_LIMIT:
@@ -276,30 +241,30 @@ static int config_set(uint32_t key, GVariant *data,
 		if (dval < devc->model->current[0] || dval > devc->model->current[1])
 			return SR_ERR_ARG;
 		devc->current_max = dval;
-		devc->target = KDXXXXP_CURRENT_MAX;
-		if (korad_kdxxxxp_set_value(sdi->conn, devc) < 0)
+		devc->target = KAXXXXP_CURRENT_MAX;
+		if (korad_kaxxxxp_set_value(sdi->conn, devc) < 0)
 			return SR_ERR;
 		break;
 	case SR_CONF_ENABLED:
 		bval = g_variant_get_boolean(data);
 		/* Set always so it is possible turn off with sigrok-cli. */
 		devc->output_enabled = bval;
-		devc->target = KDXXXXP_OUTPUT;
-		if (korad_kdxxxxp_set_value(sdi->conn, devc) < 0)
+		devc->target = KAXXXXP_OUTPUT;
+		if (korad_kaxxxxp_set_value(sdi->conn, devc) < 0)
 			return SR_ERR;
 		break;
 	case SR_CONF_OVER_CURRENT_PROTECTION_ENABLED:
 		bval = g_variant_get_boolean(data);
 		devc->ocp_enabled = bval;
-		devc->target = KDXXXXP_OCP;
-		if (korad_kdxxxxp_set_value(sdi->conn, devc) < 0)
+		devc->target = KAXXXXP_OCP;
+		if (korad_kaxxxxp_set_value(sdi->conn, devc) < 0)
 			return SR_ERR;
 		break;
 	case SR_CONF_OVER_VOLTAGE_PROTECTION_ENABLED:
 		bval = g_variant_get_boolean(data);
 		devc->ovp_enabled = bval;
-		devc->target = KDXXXXP_OVP;
-		if (korad_kdxxxxp_set_value(sdi->conn, devc) < 0)
+		devc->target = KAXXXXP_OVP;
+		if (korad_kaxxxxp_set_value(sdi->conn, devc) < 0)
 			return SR_ERR;
 		break;
 	default:
@@ -312,7 +277,6 @@ static int config_set(uint32_t key, GVariant *data,
 static int config_list(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-
 	struct dev_context *devc;
 	GVariant *gvar;
 	GVariantBuilder gvb;
@@ -373,7 +337,7 @@ static int config_list(uint32_t key, GVariant **data,
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -382,47 +346,35 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR_DEV_CLOSED;
 
 	devc = sdi->priv;
-	devc->cb_data = cb_data;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->limits);
+	std_session_send_df_header(sdi);
 
-	devc->starttime = g_get_monotonic_time();
-	devc->num_samples = 0;
 	devc->reply_pending = FALSE;
 	devc->req_sent_at = 0;
 	serial = sdi->conn;
 	serial_source_add(sdi->session, serial, G_IO_IN,
-			KDXXXXP_POLL_INTERVAL_MS,
-			korad_kdxxxxp_receive_data, (void *)sdi);
+			KAXXXXP_POLL_INTERVAL_MS,
+			korad_kaxxxxp_receive_data, (void *)sdi);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	if (sdi->status != SR_ST_ACTIVE)
-		return SR_ERR_DEV_CLOSED;
-
-	return std_serial_dev_acquisition_stop(sdi, cb_data,
-		std_serial_dev_close, sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver korad_kdxxxxp_driver_info = {
-	.name = "korad-kdxxxxp",
-	.longname = "Korad KDxxxxP",
+static struct sr_dev_driver korad_kaxxxxp_driver_info = {
+	.name = "korad-kaxxxxp",
+	.longname = "Korad KAxxxxP",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = dev_clear,
+	.dev_list = std_dev_list,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(korad_kaxxxxp_driver_info);

@@ -25,31 +25,9 @@
 #include <libsigrok/libsigrok.h>
 #include "libsigrok-internal.h"
 
-static void std_dev_attach(struct sr_dev_driver *di, struct sr_dev_inst *sdi)
-{
-	struct drv_context *drvc;
-
-	drvc = di->context;
-
-	sdi->driver = di;
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)di->context)->instances;
-}
-
 #define LOG_PREFIX "deree-de5000"
 
-SR_PRIV struct sr_dev_driver deree_de5000_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
-static int cleanup(const struct sr_dev_driver *di)
+static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, es51919_serial_clean);
 }
@@ -61,26 +39,25 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	if (!(sdi = es51919_serial_scan(options, "DER EE", "DE-5000")))
 		return NULL;
 
-	std_dev_attach(di, sdi);
-
-	return g_slist_append(NULL, sdi);
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
-SR_PRIV struct sr_dev_driver deree_de5000_driver_info = {
+static struct sr_dev_driver deree_de5000_driver_info = {
 	.name = "deree-de5000",
 	.longname = "DER EE DE-5000",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = NULL,
+	.dev_list = std_dev_list,
+	.dev_clear = dev_clear,
 	.config_get = es51919_serial_config_get,
 	.config_set = es51919_serial_config_set,
 	.config_list = es51919_serial_config_list,
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = es51919_serial_acquisition_start,
-	.dev_acquisition_stop = es51919_serial_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(deree_de5000_driver_info);

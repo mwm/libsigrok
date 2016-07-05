@@ -39,8 +39,6 @@
 #define MAX_RENUM_DELAY_MS	3000
 #define NUM_SIMUL_TRANSFERS	32
 
-SR_PRIV struct sr_dev_driver saleae_logic16_driver_info;
-
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
@@ -88,17 +86,14 @@ static const uint64_t samplerates[] = {
 	SR_MHZ(10),
 	SR_KHZ(12500),
 	SR_MHZ(16),
+	SR_MHZ(20),
 	SR_MHZ(25),
 	SR_MHZ(32),
 	SR_MHZ(40),
+	SR_MHZ(50),
 	SR_MHZ(80),
 	SR_MHZ(100),
 };
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static gboolean check_conf_profile(libusb_device *dev)
 {
@@ -196,7 +191,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->status = SR_ST_INITIALIZING;
 		sdi->vendor = g_strdup("Saleae");
 		sdi->model = g_strdup("Logic16");
-		sdi->driver = di;
 		sdi->connection_id = g_strdup(connection_id);
 
 		for (j = 0; j < ARRAY_SIZE(channel_names); j++)
@@ -206,7 +200,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		devc = g_malloc0(sizeof(struct dev_context));
 		devc->selected_voltage_range = VOLTAGE_RANGE_18_33_V;
 		sdi->priv = devc;
-		drvc->instances = g_slist_append(drvc->instances, sdi);
 		devices = g_slist_append(devices, sdi);
 
 		if (check_conf_profile(devlist[i])) {
@@ -232,12 +225,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	libusb_free_device_list(devlist, 1);
 	g_slist_free_full(conn_devices, (GDestroyNotify)sr_usb_dev_inst_free);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int logic16_dev_open(struct sr_dev_inst *sdi)
@@ -400,21 +388,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	sdi->status = SR_ST_INACTIVE;
 
 	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	int ret;
-	struct drv_context *drvc;
-
-	if (!(drvc = di->context))
-		/* Can get called on an unused driver, doesn't matter. */
-		return SR_OK;
-
-	ret = std_dev_clear(di, NULL);
-	g_free(drvc);
-
-	return ret;
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -688,7 +661,7 @@ static int receive_data(int fd, int revents, void *cb_data)
 	return TRUE;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_dev_driver *di = sdi->driver;
 	struct dev_context *devc;
@@ -714,7 +687,6 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR;
 	}
 
-	devc->cb_data = cb_data;
 	devc->sent_samples = 0;
 	devc->empty_transfer_count = 0;
 	devc->cur_channel = 0;
@@ -789,8 +761,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 
 	usb_source_add(sdi->session, devc->ctx, timeout, receive_data, (void *)sdi);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	if ((ret = logic16_start_acquisition(sdi)) != SR_OK) {
 		abort_acquisition(devc);
@@ -800,11 +771,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	int ret;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -816,14 +785,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return ret;
 }
 
-SR_PRIV struct sr_dev_driver saleae_logic16_driver_info = {
+static struct sr_dev_driver saleae_logic16_driver_info = {
 	.name = "saleae-logic16",
 	.longname = "Saleae Logic16",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -834,3 +803,4 @@ SR_PRIV struct sr_dev_driver saleae_logic16_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(saleae_logic16_driver_info);

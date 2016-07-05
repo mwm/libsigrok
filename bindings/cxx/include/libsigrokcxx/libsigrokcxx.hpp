@@ -98,6 +98,7 @@ class SR_API HardwareDevice;
 class SR_API Channel;
 class SR_API Session;
 class SR_API ConfigKey;
+class SR_API Capability;
 class SR_API InputFormat;
 class SR_API OutputFormat;
 class SR_API OutputFlag;
@@ -231,7 +232,7 @@ private:
 			const char *name, void *cb_data) noexcept;
 	static SR_PRIV int close_callback(struct sr_resource *res,
 			void *cb_data) noexcept;
-	static SR_PRIV ssize_t read_callback(const struct sr_resource *res,
+	static SR_PRIV gssize read_callback(const struct sr_resource *res,
 			void *buf, size_t count, void *cb_data) noexcept;
 	friend class Context;
 };
@@ -310,16 +311,12 @@ private:
 	friend struct std::default_delete<Context>;
 };
 
-enum Capability {
-	GET = SR_CONF_GET,
-	SET = SR_CONF_SET,
-	LIST = SR_CONF_LIST
-};
-
 /** An object that can be configured. */
 class SR_API Configurable
 {
 public:
+	/** Supported configuration keys. */
+	set<const ConfigKey *> config_keys() const;
 	/** Read configuration for the given key.
 	 * @param key ConfigKey to read. */
 	Glib::VariantBase config_get(const ConfigKey *key) const;
@@ -330,10 +327,13 @@ public:
 	/** Enumerate available values for the given configuration key.
 	 * @param key ConfigKey to enumerate values for. */
 	Glib::VariantContainerBase config_list(const ConfigKey *key) const;
-	/** Enumerate available keys, according to a given index key. */
-	map<const ConfigKey *, set<enum Capability> > config_keys(const ConfigKey *key);
-	/** Check for a key in the list from a given index key. */
-	bool config_check(const ConfigKey *key, const ConfigKey *index_key) const;
+	/** Enumerate configuration capabilities for the given configuration key.
+	 * @param key ConfigKey to enumerate capabilities for. */
+	set<const Capability *> config_capabilities(const ConfigKey *key) const;
+	/** Check whether a configuration capability is supported for a given key.
+	 * @param key ConfigKey to check.
+     * @param capability Capability to check for. */
+	bool config_check(const ConfigKey *key, const Capability *capability) const;
 protected:
 	Configurable(
 		struct sr_dev_driver *driver,
@@ -346,15 +346,15 @@ protected:
 };
 
 /** A hardware driver provided by the library */
-class SR_API Driver :
-	public ParentOwned<Driver, Context>,
-	public Configurable
+class SR_API Driver : public ParentOwned<Driver, Context>, public Configurable
 {
 public:
 	/** Name of this driver. */
 	string name() const;
 	/** Long name for this driver. */
 	string long_name() const;
+	/** Scan options supported by this driver. */
+	set<const ConfigKey *> scan_options() const;
 	/** Scan for devices and return a list of devices found.
 	 * @param options Mapping of (ConfigKey, value) pairs. */
 	vector<shared_ptr<HardwareDevice> > scan(map<const ConfigKey *, Glib::VariantBase>
@@ -828,6 +828,7 @@ public:
 	void send(void *data, size_t length);
 	/** Signal end of input data. */
 	void end();
+	void reset();
 private:
 	Input(shared_ptr<Context> context, const struct sr_input *structure);
 	~Input();

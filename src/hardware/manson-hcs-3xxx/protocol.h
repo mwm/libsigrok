@@ -68,14 +68,9 @@ struct hcs_model {
 struct dev_context {
 	const struct hcs_model *model; /**< Model information. */
 
-	uint64_t limit_samples;
-	uint64_t limit_msec;
-	uint64_t num_samples;
-	int64_t starttime;
+	struct sr_sw_limits limits;
 	int64_t req_sent_at;
 	gboolean reply_pending;
-
-	void *cb_data;
 
 	float current;		/**< Last current value [A] read from device. */
 	float current_max;	/**< Output current set. */

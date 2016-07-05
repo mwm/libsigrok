@@ -77,6 +77,14 @@ ATTRS{idVendor}=="04d8", ATTRS{idProduct}=="fb00", MODE="664", GROUP="plugdev"
 
 # DreamSourceLab DSLogic
 ATTRS{idVendor}=="2a0e", ATTRS{idProduct}=="0001", MODE="664", GROUP="plugdev"
+# DreamSourceLab DSLogic Pro
+ATTRS{idVendor}=="2a0e", ATTRS{idProduct}=="0003", MODE="664", GROUP="plugdev"
+
+# HAMEG HO720
+ATTRS{idVendor}=="0403", ATTRS{idProduct}=="ed72", MODE="664", GROUP="plugdev"
+
+# HAMEG HO730
+ATTRS{idVendor}=="0403", ATTRS{idProduct}=="ed73", MODE="664", GROUP="plugdev"
 
 # Hantek DSO-2090
 # lsusb: "04b4:2090 Cypress Semiconductor Corp."
@@ -108,6 +116,10 @@ ATTRS{idVendor}=="04b5", ATTRS{idProduct}=="5200", MODE="664", GROUP="plugdev"
 ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="520a", MODE="664", GROUP="plugdev"
 ATTRS{idVendor}=="04b5", ATTRS{idProduct}=="520a", MODE="664", GROUP="plugdev"
 
+# Hantek 6022BE
+ATTRS{idVendor}=="04b4", ATTRS{idProduct}=="6022", MODE="664", GROUP="plugdev"
+ATTRS{idVendor}=="04b5", ATTRS{idProduct}=="6022", MODE="664", GROUP="plugdev"
+
 # IKALOGIC Scanalogic-2
 ATTRS{idVendor}=="20a0", ATTRS{idProduct}=="4123", MODE="664", GROUP="plugdev"
 
@@ -121,6 +133,10 @@ ATTRS{idVendor}=="1041", ATTRS{idProduct}=="8101", MODE="664", GROUP="plugdev"
 # Lascar Electronics EL-USB-CO
 # This is actually the generic SiLabs (Cygnal) F32x USBXpress VID:PID.
 ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="0002", MODE="664", GROUP="plugdev"
+
+# LeCroy LogicStudio16
+ATTRS{idVendor}=="05ff", ATTRS{idProduct}=="a001", MODE="664", GROUP="plugdev"
+ATTRS{idVendor}=="05ff", ATTRS{idProduct}=="a002", MODE="664", GROUP="plugdev"
 
 # Link Instruments MSO-19
 ATTRS{idVendor}=="3195", ATTRS{idProduct}=="f190", MODE="664", GROUP="plugdev"
@@ -151,6 +167,14 @@ ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="04b0", MODE="664", GROUP="plugdev"
 # Rigol DG4000 series
 ATTRS{idVendor}=="1ab1", ATTRS{idProduct}=="0641", MODE="664", GROUP="plugdev"
 
+# Rohde&Schwarz HMO1002 Series VCP/USBTMC mode
+ATTRS{idVendor}=="0aad", ATTRS{idProduct}=="0118", MODE="664", GROUP="plugdev"
+ATTRS{idVendor}=="0aad", ATTRS{idProduct}=="0119", MODE="664", GROUP="plugdev"
+
+# Sainsmart DDS120
+ATTRS{idVendor}=="8102", ATTRS{idProduct}=="8102", MODE="664", GROUP="plugdev"
+ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="608e", MODE="664", GROUP="plugdev"
+
 # Saleae Logic
 # EE Electronics ESLA100 (clone of the Saleae Logic)
 # Robomotic MiniLogic (clone of the Saleae Logic)
@@ -160,6 +184,15 @@ ATTRS{idVendor}=="0925", ATTRS{idProduct}=="3881", MODE="664", GROUP="plugdev"
 
 # Saleae Logic16
 ATTRS{idVendor}=="21a9", ATTRS{idProduct}=="1001", MODE="664", GROUP="plugdev"
+
+# sigrok FX2 LA (8ch)
+ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="608c", MODE="664", GROUP="plugdev"
+
+# sigrok FX2 LA (16ch)
+ATTRS{idVendor}=="1d50", ATTRS{idProduct}=="608d", MODE="664", GROUP="plugdev"
+
+# SysClk LWLA1016
+ATTRS{idVendor}=="2961", ATTRS{idProduct}=="6688", MODE="664", GROUP="plugdev"
 
 # SysClk LWLA1034
 ATTRS{idVendor}=="2961", ATTRS{idProduct}=="6689", MODE="664", GROUP="plugdev"

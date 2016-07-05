@@ -44,6 +44,7 @@ static const struct {
 } scpi_serial_usb_ids[] = {
 	{ 0x0403, 0xed72, "115200/8n1/flow=1" }, /* Hameg HO720 */
 	{ 0x0403, 0xed73, "115200/8n1/flow=1" }, /* Hameg HO730 */
+	{ 0x0aad, 0x0118, "115200/8n1" },        /* R&S HMO1002 */
 };
 
 static GSList *scpi_serial_scan(struct drv_context *drvc)
@@ -122,25 +123,20 @@ static int scpi_serial_source_remove(struct sr_session *session, void *priv)
 static int scpi_serial_send(void *priv, const char *command)
 {
 	int len, result, written;
-	gchar *terminated_command;
 	struct scpi_serial *sscpi = priv;
 	struct sr_serial_dev_inst *serial = sscpi->serial;
 
-	terminated_command = g_strconcat(command, "\n", NULL);
-	len = strlen(terminated_command);
+	len = strlen(command);
 	written = 0;
 	while (written < len) {
 		result = serial_write_nonblocking(serial,
-				terminated_command + written, len - written);
+				command + written, len - written);
 		if (result < 0) {
 			sr_err("Error while sending SCPI command: '%s'.", command);
-			g_free(terminated_command);
 			return SR_ERR;
 		}
 		written += result;
 	}
-
-	g_free(terminated_command);
 
 	sr_spew("Successfully sent SCPI command: '%s'.", command);
 

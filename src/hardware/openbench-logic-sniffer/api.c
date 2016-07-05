@@ -85,28 +85,16 @@ static const uint64_t samplerates[] = {
 
 #define RESPONSE_DELAY_US (10 * 1000)
 
-SR_PRIV struct sr_dev_driver ols_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct sr_config *src;
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct sr_serial_dev_inst *serial;
-	GSList *l, *devices;
+	GSList *l;
 	int ret;
 	unsigned int i;
 	const char *conn, *serialcomm;
 	char buf[8];
-
-	drvc = di->context;
-
-	devices = NULL;
 
 	conn = serialcomm = NULL;
 	for (l = options; l; l = l->next) {
@@ -189,7 +177,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->vendor = g_strdup("Sump");
 		sdi->model = g_strdup("Logic Analyzer");
 		sdi->version = g_strdup("v1.0");
-		sdi->driver = di;
 		for (i = 0; i < ARRAY_SIZE(ols_channel_names); i++)
 			sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE,
 					ols_channel_names[i]);
@@ -202,22 +189,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
-
 	serial_close(serial);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -463,8 +437,7 @@ static int set_trigger(const struct sr_dev_inst *sdi, int stage)
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -570,35 +543,32 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	devc->cnt_bytes = devc->cnt_samples = devc->cnt_samples_rle = 0;
 	memset(devc->sample, 0, 4);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* If the device stops sending for longer than it takes to send a byte,
 	 * that means it's finished. But wait at least 100 ms to be safe.
 	 */
 	serial_source_add(sdi->session, serial, G_IO_IN, 100,
-			ols_receive_data, cb_data);
+			ols_receive_data, (struct sr_dev_inst *)sdi);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	(void)cb_data;
-
 	abort_acquisition(sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver ols_driver_info = {
+static struct sr_dev_driver ols_driver_info = {
 	.name = "ols",
 	.longname = "Openbench Logic Sniffer",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -609,3 +579,4 @@ SR_PRIV struct sr_dev_driver ols_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(ols_driver_info);

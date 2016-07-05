@@ -38,7 +38,7 @@
 /* Size of the analog pattern space per channel. */
 #define ANALOG_BUFSIZE       4096
 
-#define DEFAULT_ANALOG_AMPLITUDE 25
+#define DEFAULT_ANALOG_AMPLITUDE 10
 #define ANALOG_SAMPLES_PER_PERIOD 20
 
 /* Logic patterns we can generate. */
@@ -98,7 +98,10 @@ struct analog_gen {
 	float amplitude;
 	float pattern_data[ANALOG_BUFSIZE];
 	unsigned int num_samples;
-	struct sr_datafeed_analog_old packet;
+	struct sr_datafeed_analog packet;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	float avg_val; /* Average value */
 	unsigned num_avgs; /* Number of samples averaged */
 };
@@ -137,7 +140,7 @@ static const uint32_t scanopts[] = {
 };
 
 static const uint32_t devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
@@ -175,14 +178,7 @@ static const uint8_t pattern_sigrok[] = {
 	0xbe, 0xbe, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
 };
 
-SR_PRIV struct sr_dev_driver demo_driver_info;
-
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data);
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
+static int dev_acquisition_stop(struct sr_dev_inst *sdi);
 
 static void generate_analog_pattern(struct analog_gen *ag, uint64_t sample_rate)
 {
@@ -259,18 +255,15 @@ static void generate_analog_pattern(struct analog_gen *ag, uint64_t sample_rate)
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
 	struct sr_channel *ch;
 	struct sr_channel_group *cg, *acg;
 	struct sr_config *src;
 	struct analog_gen *ag;
-	GSList *devices, *l;
+	GSList *l;
 	int num_logic_channels, num_analog_channels, pattern, i;
 	char channel_name[16];
-
-	drvc = di->context;
 
 	num_logic_channels = DEFAULT_NUM_LOGIC_CHANNELS;
 	num_analog_channels = DEFAULT_NUM_ANALOG_CHANNELS;
@@ -286,12 +279,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		}
 	}
 
-	devices = NULL;
-
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
-	sdi->status = SR_ST_ACTIVE;
+	sdi->status = SR_ST_INACTIVE;
 	sdi->model = g_strdup("Demo device");
-	sdi->driver = di;
 
 	devc = g_malloc0(sizeof(struct dev_context));
 	devc->cur_samplerate = SR_KHZ(200);
@@ -300,63 +290,61 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	devc->logic_pattern = PATTERN_SIGROK;
 	devc->num_analog_channels = num_analog_channels;
 
-	/* Logic channels, all in one channel group. */
-	cg = g_malloc0(sizeof(struct sr_channel_group));
-	cg->name = g_strdup("Logic");
-	for (i = 0; i < num_logic_channels; i++) {
-		sprintf(channel_name, "D%d", i);
-		ch = sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE, channel_name);
-		cg->channels = g_slist_append(cg->channels, ch);
+	if (num_logic_channels > 0) {
+		/* Logic channels, all in one channel group. */
+		cg = g_malloc0(sizeof(struct sr_channel_group));
+		cg->name = g_strdup("Logic");
+		for (i = 0; i < num_logic_channels; i++) {
+			sprintf(channel_name, "D%d", i);
+			ch = sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE, channel_name);
+			cg->channels = g_slist_append(cg->channels, ch);
+		}
+		sdi->channel_groups = g_slist_append(NULL, cg);
 	}
-	sdi->channel_groups = g_slist_append(NULL, cg);
 
 	/* Analog channels, channel groups and pattern generators. */
-	pattern = 0;
-	/* An "Analog" channel group with all analog channels in it. */
-	acg = g_malloc0(sizeof(struct sr_channel_group));
-	acg->name = g_strdup("Analog");
-	sdi->channel_groups = g_slist_append(sdi->channel_groups, acg);
+	if (num_analog_channels > 0) {
+		pattern = 0;
+		/* An "Analog" channel group with all analog channels in it. */
+		acg = g_malloc0(sizeof(struct sr_channel_group));
+		acg->name = g_strdup("Analog");
+		sdi->channel_groups = g_slist_append(sdi->channel_groups, acg);
 
-	devc->ch_ag = g_hash_table_new(g_direct_hash, g_direct_equal);
-	for (i = 0; i < num_analog_channels; i++) {
-		snprintf(channel_name, 16, "A%d", i);
-		ch = sr_channel_new(sdi, i + num_logic_channels, SR_CHANNEL_ANALOG,
-				TRUE, channel_name);
-		acg->channels = g_slist_append(acg->channels, ch);
+		devc->ch_ag = g_hash_table_new(g_direct_hash, g_direct_equal);
+		for (i = 0; i < num_analog_channels; i++) {
+			snprintf(channel_name, 16, "A%d", i);
+			ch = sr_channel_new(sdi, i + num_logic_channels, SR_CHANNEL_ANALOG,
+					TRUE, channel_name);
+			acg->channels = g_slist_append(acg->channels, ch);
 
-		/* Every analog channel gets its own channel group as well. */
-		cg = g_malloc0(sizeof(struct sr_channel_group));
-		cg->name = g_strdup(channel_name);
-		cg->channels = g_slist_append(NULL, ch);
-		sdi->channel_groups = g_slist_append(sdi->channel_groups, cg);
+			/* Every analog channel gets its own channel group as well. */
+			cg = g_malloc0(sizeof(struct sr_channel_group));
+			cg->name = g_strdup(channel_name);
+			cg->channels = g_slist_append(NULL, ch);
+			sdi->channel_groups = g_slist_append(sdi->channel_groups, cg);
 
-		/* Every channel gets a generator struct. */
-		ag = g_malloc(sizeof(struct analog_gen));
-		ag->amplitude = DEFAULT_ANALOG_AMPLITUDE;
-		ag->packet.channels = cg->channels;
-		ag->packet.mq = 0;
-		ag->packet.mqflags = 0;
-		ag->packet.unit = SR_UNIT_VOLT;
-		ag->packet.data = ag->pattern_data;
-		ag->pattern = pattern;
-		ag->avg_val = 0.0f;
-		ag->num_avgs = 0;
-		g_hash_table_insert(devc->ch_ag, ch, ag);
+			/* Every channel gets a generator struct. */
+			ag = g_malloc(sizeof(struct analog_gen));
+			ag->amplitude = DEFAULT_ANALOG_AMPLITUDE;
+			sr_analog_init(&ag->packet, &ag->encoding, &ag->meaning, &ag->spec, 0);
+			ag->packet.meaning->channels = cg->channels;
+			ag->packet.meaning->mq = 0;
+			ag->packet.meaning->mqflags = 0;
+			ag->packet.meaning->unit = SR_UNIT_VOLT;
+			ag->packet.data = ag->pattern_data;
+			ag->pattern = pattern;
+			ag->avg_val = 0.0f;
+			ag->num_avgs = 0;
+			g_hash_table_insert(devc->ch_ag, ch, ag);
 
-		if (++pattern == ARRAY_SIZE(analog_pattern_str))
-			pattern = 0;
+			if (++pattern == ARRAY_SIZE(analog_pattern_str))
+				pattern = 0;
+		}
 	}
 
 	sdi->priv = devc;
-	devices = g_slist_append(devices, sdi);
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -389,7 +377,7 @@ static void clear_helper(void *priv)
 	g_free(devc);
 }
 
-static int cleanup(const struct sr_dev_driver *di)
+static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, clear_helper);
 }
@@ -687,7 +675,7 @@ static void send_analog_packet(struct analog_gen *ag,
 	unsigned int i;
 
 	devc = sdi->priv;
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &ag->packet;
 
 	if (!devc->avg) {
@@ -754,10 +742,10 @@ static int prepare_data(int fd, int revents, void *cb_data)
 	devc = sdi->priv;
 
 	/* Just in case. */
-	if (devc->cur_samplerate <= 0 || devc->logic_unitsize <= 0
+	if (devc->cur_samplerate <= 0
 			|| (devc->num_logic_channels <= 0
 			&& devc->num_analog_channels <= 0)) {
-		dev_acquisition_stop(sdi, sdi);
+		dev_acquisition_stop(sdi);
 		return G_SOURCE_CONTINUE;
 	}
 
@@ -784,8 +772,8 @@ static int prepare_data(int fd, int revents, void *cb_data)
 	 */
 	todo_us = samples_todo * G_USEC_PER_SEC / devc->cur_samplerate;
 
-	logic_done = 0;
-	analog_done = 0;
+	logic_done  = devc->num_logic_channels  > 0 ? 0 : samples_todo;
+	analog_done = devc->num_analog_channels > 0 ? 0 : samples_todo;
 
 	while (logic_done < samples_todo || analog_done < samples_todo) {
 		/* Logic */
@@ -833,7 +821,7 @@ static int prepare_data(int fd, int revents, void *cb_data)
 			g_hash_table_iter_init(&iter, devc->ch_ag);
 			while (g_hash_table_iter_next(&iter, NULL, &value)) {
 				ag = value;
-				packet.type = SR_DF_ANALOG_OLD;
+				packet.type = SR_DF_ANALOG;
 				packet.payload = &ag->packet;
 				ag->packet.data = &ag->avg_val;
 				ag->packet.num_samples = 1;
@@ -841,19 +829,17 @@ static int prepare_data(int fd, int revents, void *cb_data)
 			}
 		}
 		sr_dbg("Requested number of samples reached.");
-		dev_acquisition_stop(sdi, sdi);
+		dev_acquisition_stop(sdi);
 	}
 
 	return G_SOURCE_CONTINUE;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	GHashTableIter iter;
 	void *value;
-
-	(void)cb_data;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -868,8 +854,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	sr_session_source_add(sdi->session, -1, 0, 100,
 			prepare_data, (struct sr_dev_inst *)sdi);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* We use this timestamp to decide how many more samples to send. */
 	devc->start_us = g_get_monotonic_time();
@@ -878,32 +863,24 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
-
 	sr_dbg("Stopping acquisition.");
-
 	sr_session_source_remove(sdi->session, -1);
-
-	/* Send last packet. */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver demo_driver_info = {
+static struct sr_dev_driver demo_driver_info = {
 	.name = "demo",
 	.longname = "Demo driver and pattern generator",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
-	.dev_clear = NULL,
+	.dev_list = std_dev_list,
+	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
 	.config_list = config_list,
@@ -913,3 +890,4 @@ SR_PRIV struct sr_dev_driver demo_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(demo_driver_info);

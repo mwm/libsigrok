@@ -41,16 +41,6 @@ static const uint32_t devopts[] = {
 	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
 };
 
-static int dev_clear(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct dmm_info *dmm;
@@ -58,7 +48,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	GSList *l, *devices;
 	const char *conn, *serialcomm;
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	int dropped, ret;
@@ -92,7 +81,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	sr_info("Probing serial port %s.", conn);
 
-	drvc = di->context;
 	devices = NULL;
 	serial_flush(serial);
 
@@ -136,28 +124,17 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->vendor = g_strdup(dmm->vendor);
 	sdi->model = g_strdup(dmm->device);
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 	sdi->priv = devc;
-	sdi->driver = di;
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 	devices = g_slist_append(devices, sdi);
 
 scan_cleanup:
 	serial_close(serial);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
+	return std_scan_complete(di, devices);
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -170,23 +147,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -211,7 +174,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -219,23 +182,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	devc->cb_data = cb_data;
-
-	/*
-	 * Reset the number of samples to take. If we've already collected our
-	 * quota, but we start a new session, and don't reset this, we'll just
-	 * quit without acquiring any new samples.
-	 */
-	devc->num_samples = 0;
-	devc->starttime = g_get_monotonic_time();
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->limits);
+	std_session_send_df_header(sdi);
 
 	/* Poll every 50ms, or whenever some data comes in. */
 	serial = sdi->conn;
@@ -245,38 +195,31 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data, std_serial_dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
 #define DMM(ID, CHIPSET, VENDOR, MODEL, CONN, BAUDRATE, PACKETSIZE, TIMEOUT, \
 			DELAY, REQUEST, VALID, PARSE, DETAILS) \
-	&(struct dmm_info) { \
+	&((struct dmm_info) { \
 		{ \
 			.name = ID, \
 			.longname = VENDOR " " MODEL, \
 			.api_version = 1, \
-			.init = init, \
-			.cleanup = cleanup, \
+			.init = std_init, \
+			.cleanup = std_cleanup, \
 			.scan = scan, \
-			.dev_list = dev_list, \
-			.dev_clear = dev_clear, \
+			.dev_list = std_dev_list, \
 			.config_get = NULL, \
 			.config_set = config_set, \
 			.config_list = config_list, \
 			.dev_open = std_serial_dev_open, \
 			.dev_close = std_serial_dev_close, \
 			.dev_acquisition_start = dev_acquisition_start, \
-			.dev_acquisition_stop = dev_acquisition_stop, \
+			.dev_acquisition_stop = std_serial_dev_acquisition_stop, \
 			.context = NULL, \
 		}, \
 		VENDOR, MODEL, CONN, BAUDRATE, PACKETSIZE, TIMEOUT, DELAY, \
 		REQUEST, VALID, PARSE, DETAILS, sizeof(struct CHIPSET##_info) \
-	}
+	}).di
 
-SR_PRIV const struct dmm_info *serial_dmm_drivers[] = {
+SR_REGISTER_DEV_DRIVER_LIST(serial_dmm_drivers,
 	DMM(
 		"bbcgm-2010", metex14,
 		"BBC Goertz Metrawatt", "M2110", "1200/7n2", 1200,
@@ -599,5 +542,16 @@ SR_PRIV const struct dmm_info *serial_dmm_drivers[] = {
 		sr_brymen_bm25x_packet_valid, sr_brymen_bm25x_parse,
 		NULL
 	),
-	NULL
-};
+	DMM(
+		"velleman-dvm4100", dtm0660,
+		"Velleman", "DVM4100", "2400/8n1/rts=0/dtr=1",
+		2400, DTM0660_PACKET_SIZE, 0, 0, NULL,
+		sr_dtm0660_packet_valid, sr_dtm0660_parse, NULL
+	),
+	DMM(
+		"peaktech-3415", dtm0660,
+		"Peaktech", "3415", "2400/8n1/rts=0/dtr=1",
+		2400, DTM0660_PACKET_SIZE, 0, 0, NULL,
+		sr_dtm0660_packet_valid, sr_dtm0660_parse, NULL
+	),
+);

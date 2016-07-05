@@ -43,6 +43,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_SET,
 	SR_CONF_NUM_HDIV | SR_CONF_GET,
 	SR_CONF_SAMPLERATE | SR_CONF_GET,
@@ -53,6 +54,7 @@ static const uint32_t analog_devopts[] = {
 	SR_CONF_NUM_VDIV | SR_CONF_GET,
 	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_PROBE_FACTOR | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
 static const uint64_t timebases[][2] = {
@@ -160,6 +162,19 @@ static const char *coupling[] = {
 	"GND",
 };
 
+static const uint64_t probe_factor[] = {
+	1,
+	2,
+	5,
+	10,
+	20,
+	50,
+	100,
+	200,
+	500,
+	1000,
+};
+
 /* Do not change the order of entries */
 static const char *data_sources[] = {
 	"Live",
@@ -249,7 +264,7 @@ static const struct rigol_ds_model supported_models[] = {
 	{SERIES(DS1000Z), "MSO1104Z-S", {5, 1000000000}, 4, true},
 };
 
-SR_PRIV struct sr_dev_driver rigol_ds_driver_info;
+static struct sr_dev_driver rigol_ds_driver_info;
 
 static void clear_helper(void *priv)
 {
@@ -270,11 +285,6 @@ static void clear_helper(void *priv)
 static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, clear_helper);
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
 }
 
 static struct sr_dev_inst *probe_device(struct sr_scpi_dev_inst *scpi)
@@ -411,11 +421,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	return sr_scpi_scan(di->context, options, probe_device);
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	int ret;
@@ -457,11 +462,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	}
 
 	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
 }
 
 static int analog_frame_size(const struct sr_dev_inst *sdi)
@@ -516,8 +516,10 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 	int idx = -1;
 	unsigned i;
 
-	if (!sdi || !(devc = sdi->priv))
+	if (!sdi)
 		return SR_ERR_ARG;
+
+	devc = sdi->priv;
 
 	/* If a channel group is specified, it must be a valid one. */
 	if (cg && !g_slist_find(sdi->channel_groups, cg)) {
@@ -587,6 +589,9 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		}
 		*data = g_variant_new_string(tmp_str);
 		break;
+	case SR_CONF_TRIGGER_LEVEL:
+		*data = g_variant_new_double(devc->trigger_level);
+		break;
 	case SR_CONF_TIMEBASE:
 		for (i = 0; i < devc->num_timebases; i++) {
 			float tb = (float)devc->timebases[i][0] / devc->timebases[i][1];
@@ -629,6 +634,13 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		}
 		*data = g_variant_new_string(devc->coupling[analog_channel]);
 		break;
+	case SR_CONF_PROBE_FACTOR:
+		if (analog_channel < 0) {
+			sr_dbg("Negative analog channel: %d.", analog_channel);
+			return SR_ERR_NA;
+		}
+		*data = g_variant_new_uint64(devc->attenuation[analog_channel]);
+		break;
 	default:
 		return SR_ERR_NA;
 	}
@@ -647,8 +659,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	const char *tmp_str;
 	char buffer[16];
 
-	if (!(devc = sdi->priv))
-		return SR_ERR_ARG;
+	devc = sdi->priv;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
@@ -689,6 +700,13 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		t_dbl = -(devc->horiz_triggerpos - 0.5) * devc->timebase * devc->num_timebases;
 		g_ascii_formatd(buffer, sizeof(buffer), "%.6f", t_dbl);
 		ret = rigol_ds_config_set(sdi, ":TIM:OFFS %s", buffer);
+		break;
+	case SR_CONF_TRIGGER_LEVEL:
+		t_dbl = g_variant_get_double(data);
+		g_ascii_formatd(buffer, sizeof(buffer), "%.3f", t_dbl);
+		ret = rigol_ds_config_set(sdi, ":TRIG:EDGE:LEV %s", buffer);
+		if (ret == SR_OK)
+			devc->trigger_level = t_dbl;
 		break;
 	case SR_CONF_TIMEBASE:
 		g_variant_get(data, "(tt)", &p, &q);
@@ -778,6 +796,30 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		}
 		sr_dbg("Didn't set coupling, unknown channel(group).");
 		return SR_ERR_NA;
+	case SR_CONF_PROBE_FACTOR:
+		if (!cg) {
+			sr_err("No channel group specified.");
+			return SR_ERR_CHANNEL_GROUP;
+		}
+		p = g_variant_get_uint64(data);
+		for (i = 0; i < devc->model->analog_channels; i++) {
+			if (cg == devc->analog_groups[i]) {
+				for (j = 0; j < ARRAY_SIZE(probe_factor); j++) {
+					if (p == probe_factor[j]) {
+						devc->attenuation[i] = p;
+						ret = rigol_ds_config_set(sdi, ":CHAN%d:PROB %"PRIu64,
+						                          i + 1, p);
+						if (ret == SR_OK)
+							rigol_ds_get_dev_cfg_vertical(sdi);
+						return ret;
+					}
+				}
+				sr_err("Invalid probe factor: %"PRIu64".", p);
+				return SR_ERR_ARG;
+			}
+		}
+		sr_dbg("Didn't set probe factor, unknown channel(group).");
+		return SR_ERR_NA;
 	case SR_CONF_DATA_SOURCE:
 		tmp_str = g_variant_get_string(data, NULL);
 		if (!strcmp(tmp_str, "Live"))
@@ -819,8 +861,9 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	}
 
 	/* Every other option requires a valid device instance. */
-	if (!sdi || !(devc = sdi->priv))
+	if (!sdi)
 		return SR_ERR_ARG;
+	devc = sdi->priv;
 
 	/* If a channel group is specified, it must be a valid one. */
 	if (cg && !g_slist_find(sdi->channel_groups, cg)) {
@@ -855,6 +898,14 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 			return SR_ERR_CHANNEL_GROUP;
 		}
 		*data = g_variant_new_strv(coupling, ARRAY_SIZE(coupling));
+		break;
+	case SR_CONF_PROBE_FACTOR:
+		if (!cg) {
+			sr_err("No channel group specified.");
+			return SR_ERR_CHANNEL_GROUP;
+		}
+		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT64,
+			probe_factor, ARRAY_SIZE(probe_factor), sizeof(uint64_t));
 		break;
 	case SR_CONF_VDIV:
 		if (!devc)
@@ -921,7 +972,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct sr_scpi_dev_inst *scpi;
 	struct dev_context *devc;
@@ -1031,8 +1082,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	sr_scpi_source_add(sdi->session, scpi, G_IO_IN, 50,
 			rigol_ds_receive, (void *)sdi);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	devc->channel_entry = devc->enabled_channels;
 
@@ -1041,18 +1091,15 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 
 	/* Start of first frame. */
 	packet.type = SR_DF_FRAME_BEGIN;
-	sr_session_send(cb_data, &packet);
+	sr_session_send(sdi, &packet);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_scpi_dev_inst *scpi;
-	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
 
 	devc = sdi->priv;
 
@@ -1061,9 +1108,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 		return SR_ERR;
 	}
 
-	/* End of last frame. */
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	g_slist_free(devc->enabled_channels);
 	devc->enabled_channels = NULL;
@@ -1073,14 +1118,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver rigol_ds_driver_info = {
+static struct sr_dev_driver rigol_ds_driver_info = {
 	.name = "rigol-ds",
 	.longname = "Rigol DS",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -1091,3 +1136,4 @@ SR_PRIV struct sr_dev_driver rigol_ds_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(rigol_ds_driver_info);

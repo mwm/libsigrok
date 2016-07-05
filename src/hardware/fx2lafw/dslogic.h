@@ -27,17 +27,32 @@
 #define DS_CMD_START			0xb2
 #define DS_CMD_FPGA_FW			0xb3
 #define DS_CMD_CONFIG			0xb4
+#define DS_CMD_VTH			0xb8
 
 #define DS_NUM_TRIGGER_STAGES		16
 #define DS_START_FLAGS_STOP		(1 << 7)
 #define DS_START_FLAGS_CLK_48MHZ	(1 << 6)
 #define DS_START_FLAGS_SAMPLE_WIDE	(1 << 5)
+#define DS_START_FLAGS_MODE_LA		(1 << 4)
+
+#define DS_MAX_LOGIC_DEPTH		SR_MHZ(16)
+#define DS_MAX_LOGIC_SAMPLERATE		SR_MHZ(100)
 
 enum dslogic_operation_modes {
 	DS_OP_NORMAL,
 	DS_OP_INTERNAL_TEST,
 	DS_OP_EXTERNAL_TEST,
 	DS_OP_LOOPBACK_TEST,
+};
+
+enum {
+	DS_VOLTAGE_RANGE_18_33_V,	/* 1.8V and 3.3V logic */
+	DS_VOLTAGE_RANGE_5_V,		/* 5V logic */
+};
+
+enum {
+	DS_EDGE_RISING,
+	DS_EDGE_FALLING,
 };
 
 struct dslogic_version {
@@ -54,7 +69,8 @@ struct dslogic_mode {
 struct dslogic_trigger_pos {
 	uint32_t real_pos;
 	uint32_t ram_saddr;
-	uint8_t first_block[504];
+	uint32_t remain_cnt;
+	uint8_t first_block[500];
 };
 
 /*
@@ -64,7 +80,7 @@ struct dslogic_trigger_pos {
  */
 #define _DS_CFG(variable, wordcnt) ((variable << 8) | wordcnt)
 #define _DS_CFG_PAD(variable, wordcnt) ((_DS_CFG(variable, wordcnt) << 16) | 0xffff)
-#define DS_CFG_START		0xffffffff
+#define DS_CFG_START		0xf5a5f5a5
 #define DS_CFG_MODE		_DS_CFG(0, 1)
 #define DS_CFG_DIVIDER		_DS_CFG_PAD(1, 2)
 #define DS_CFG_COUNT		_DS_CFG_PAD(3, 2)
@@ -82,7 +98,7 @@ struct dslogic_trigger_pos {
 #define DS_CFG_TRIG_COUNT1	_DS_CFG_PAD(29, 16)
 #define DS_CFG_TRIG_LOGIC0	_DS_CFG_PAD(32, 16)
 #define DS_CFG_TRIG_LOGIC1	_DS_CFG_PAD(33, 16)
-#define DS_CFG_END		0x00000000
+#define DS_CFG_END		0xfa5afa5a
 
 struct dslogic_fpga_config {
 	uint32_t sync;
@@ -128,5 +144,7 @@ SR_PRIV int dslogic_fpga_firmware_upload(const struct sr_dev_inst *sdi,
 SR_PRIV int dslogic_start_acquisition(const struct sr_dev_inst *sdi);
 SR_PRIV int dslogic_stop_acquisition(const struct sr_dev_inst *sdi);
 SR_PRIV int dslogic_fpga_configure(const struct sr_dev_inst *sdi);
+SR_PRIV int dslogic_set_vth(const struct sr_dev_inst *sdi, double vth);
+SR_PRIV int dslogic_get_number_of_transfers(struct dev_context *devc);
 
 #endif

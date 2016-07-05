@@ -23,25 +23,23 @@
 #include <stdlib.h>
 #include <string.h>
 #include <libsigrok/libsigrok.h>
-#include "libsigrok-internal.h"
+#include <libsigrok-internal.h>
 #include "protocol.h"
 
+/* Supported device scan options.
+ */
 static const uint32_t scanopts[] = {
 	SR_CONF_CONN,
 };
 
-static const uint32_t devopts[] = {
+/* Driver capabilities.
+ */
+static const uint32_t drvopts[] = {
 	SR_CONF_LOGIC_ANALYZER,
-	SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
-	SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
-	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_EXTERNAL_CLOCK | SR_CONF_GET | SR_CONF_SET,
-	SR_CONF_CLOCK_EDGE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
-	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
+/* Supported trigger match conditions.
+ */
 static const int32_t trigger_matches[] = {
 	SR_TRIGGER_ZERO,
 	SR_TRIGGER_ONE,
@@ -49,59 +47,46 @@ static const int32_t trigger_matches[] = {
 	SR_TRIGGER_FALLING,
 };
 
-/* The hardware supports more samplerates than these, but these are the
- * options hardcoded into the vendor's Windows GUI.
+/* Names assigned to available trigger sources.
  */
-static const uint64_t samplerates[] = {
-	SR_MHZ(125), SR_MHZ(100),
-	SR_MHZ(50),  SR_MHZ(20),  SR_MHZ(10),
-	SR_MHZ(5),   SR_MHZ(2),   SR_MHZ(1),
-	SR_KHZ(500), SR_KHZ(200), SR_KHZ(100),
-	SR_KHZ(50),  SR_KHZ(20),  SR_KHZ(10),
-	SR_KHZ(5),   SR_KHZ(2),   SR_KHZ(1),
-	SR_HZ(500),  SR_HZ(200),  SR_HZ(100),
+static const char *const trigger_source_names[] = {
+	[TRIGGER_CHANNELS] = "CH",
+	[TRIGGER_EXT_TRG] = "TRG",
 };
 
-/* Names assigned to available trigger sources.  Indices must match
- * trigger_source enum values.
+/* Names assigned to available edge slope choices.
  */
-static const char *const trigger_source_names[] = { "CH", "TRG" };
+static const char *const signal_edge_names[] = {
+	[EDGE_POSITIVE] = "r",
+	[EDGE_NEGATIVE] = "f",
+};
 
-/* Names assigned to available trigger slope choices.  Indices must
- * match the signal_edge enum values.
+/* Create a new sigrok device instance for the indicated LWLA model.
  */
-static const char *const signal_edge_names[] = { "r", "f" };
-
-SR_PRIV struct sr_dev_driver sysclk_lwla_driver_info;
-static struct sr_dev_driver *const di = &sysclk_lwla_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
-static struct sr_dev_inst *dev_inst_new(void)
+static struct sr_dev_inst *dev_inst_new(const struct model_info *model)
 {
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
 	int i;
 	char name[8];
 
-	/* Allocate memory for our private driver context. */
+	/* Initialize private device context. */
 	devc = g_malloc0(sizeof(struct dev_context));
+	devc->model = model;
+	devc->active_fpga_config = FPGA_NOCONF;
+	devc->cfg_rle = TRUE;
+	devc->samplerate = model->samplerates[0];
+	devc->channel_mask = (UINT64_C(1) << model->num_channels) - 1;
 
-	/* Register the device with libsigrok. */
+	/* Create sigrok device instance. */
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup(VENDOR_NAME);
-	sdi->model = g_strdup(MODEL_NAME);
-
-	/* Enable all channels to match the default channel configuration. */
-	devc->channel_mask = ALL_CHANNELS_MASK;
-	devc->samplerate = DEFAULT_SAMPLERATE;
-
+	sdi->model = g_strdup(model->name);
 	sdi->priv = devc;
-	for (i = 0; i < NUM_CHANNELS; ++i) {
+
+	/* Generate list of logic channels. */
+	for (i = 0; i < model->num_channels; i++) {
 		/* The LWLA series simply number channels from CH1 to CHxx. */
 		g_snprintf(name, sizeof(name), "CH%d", i + 1);
 		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE, name);
@@ -110,17 +95,75 @@ static struct sr_dev_inst *dev_inst_new(void)
 	return sdi;
 }
 
+/* Create a new device instance for a libusb device if it is a SysClk LWLA
+ * device and also matches the connection specification.
+ */
+static struct sr_dev_inst *dev_inst_new_matching(GSList *conn_matches,
+						 libusb_device *dev)
+{
+	GSList *node;
+	struct sr_usb_dev_inst *usb;
+	const struct model_info *model;
+	struct sr_dev_inst *sdi;
+	struct libusb_device_descriptor des;
+	int bus, address, ret;
+	unsigned int vid, pid;
+
+	bus = libusb_get_bus_number(dev);
+	address = libusb_get_device_address(dev);
+
+	for (node = conn_matches; node != NULL; node = node->next) {
+		usb = node->data;
+		if (usb && usb->bus == bus && usb->address == address)
+			break; /* found */
+	}
+	if (conn_matches && !node)
+		return NULL; /* no match */
+
+	ret = libusb_get_device_descriptor(dev, &des);
+	if (ret != 0) {
+		sr_err("Failed to get USB device descriptor: %s.",
+			libusb_error_name(ret));
+		return NULL;
+	}
+	vid = des.idVendor;
+	pid = des.idProduct;
+
+	/* Create sigrok device instance. */
+	if (vid == USB_VID_SYSCLK && pid == USB_PID_LWLA1016) {
+		model = &lwla1016_info;
+	} else if (vid == USB_VID_SYSCLK && pid == USB_PID_LWLA1034) {
+		model = &lwla1034_info;
+	} else {
+		if (conn_matches)
+			sr_warn("USB device %d.%d (%04x:%04x) is not a"
+				" SysClk LWLA.", bus, address, vid, pid);
+		return NULL;
+	}
+	sdi = dev_inst_new(model);
+
+	sdi->inst_type = SR_INST_USB;
+	sdi->conn = sr_usb_dev_inst_new(bus, address, NULL);
+
+	return sdi;
+}
+
+/* Scan for SysClk LWLA devices and create a device instance for each one.
+ */
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	GSList *usb_devices, *devices, *node;
+	GSList *conn_devices, *devices, *node;
 	struct drv_context *drvc;
 	struct sr_dev_inst *sdi;
-	struct sr_usb_dev_inst *usb;
 	struct sr_config *src;
 	const char *conn;
+	libusb_device **devlist;
+	ssize_t num_devs, i;
 
 	drvc = di->context;
-	conn = USB_VID_PID;
+	conn = NULL;
+	conn_devices = NULL;
+	devices = NULL;
 
 	for (node = options; node != NULL; node = node->next) {
 		src = node->data;
@@ -129,135 +172,194 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			break;
 		}
 	}
-	usb_devices = sr_usb_find(drvc->sr_ctx->libusb_ctx, conn);
-	devices = NULL;
+	if (conn) {
+		/* Find devices matching the connection specification. */
+		conn_devices = sr_usb_find(drvc->sr_ctx->libusb_ctx, conn);
+	}
 
-	for (node = usb_devices; node != NULL; node = node->next) {
-		usb = node->data;
+	/* List all libusb devices. */
+	num_devs = libusb_get_device_list(drvc->sr_ctx->libusb_ctx, &devlist);
+	if (num_devs < 0) {
+		sr_err("Failed to list USB devices: %s.",
+			libusb_error_name(num_devs));
+		g_slist_free_full(conn_devices,
+			(GDestroyNotify)&sr_usb_dev_inst_free);
+		return NULL;
+	}
 
-		/* Create sigrok device instance. */
-		sdi = dev_inst_new();
-		if (!sdi) {
-			sr_usb_dev_inst_free(usb);
-			continue;
-		}
-		sdi->driver = di;
-		sdi->inst_type = SR_INST_USB;
-		sdi->conn = usb;
+	/* Scan the USB device list for matching LWLA devices. */
+	for (i = 0; i < num_devs; i++) {
+		sdi = dev_inst_new_matching(conn_devices, devlist[i]);
+		if (!sdi)
+			continue; /* no match */
 
 		/* Register device instance with driver. */
-		drvc->instances = g_slist_append(drvc->instances, sdi);
 		devices = g_slist_append(devices, sdi);
 	}
 
-	g_slist_free(usb_devices);
+	libusb_free_device_list(devlist, 1);
+	g_slist_free_full(conn_devices, (GDestroyNotify)&sr_usb_dev_inst_free);
 
-	return devices;
+	return std_scan_complete(di, devices);
 }
 
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	struct drv_context *drvc;
-
-	drvc = di->context;
-
-	return drvc->instances;
-}
-
+/* Destroy the private device context.
+ */
 static void clear_dev_context(void *priv)
 {
 	struct dev_context *devc;
 
 	devc = priv;
 
+	if (devc->acquisition) {
+		sr_err("Cannot clear device context during acquisition!");
+		return; /* Leak and pray. */
+	}
 	sr_dbg("Device context cleared.");
 
-	lwla_free_acquisition_state(devc->acquisition);
 	g_free(devc);
 }
 
+/* Destroy all device instances.
+ */
 static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, &clear_dev_context);
 }
 
+/* Drain any pending data from the USB transfer buffers on the device.
+ * This may be necessary e.g. after a crash or generally to clean up after
+ * an abnormal condition.
+ */
+static int drain_usb(struct sr_usb_dev_inst *usb, unsigned int endpoint)
+{
+	int drained, xfer_len, ret;
+	unsigned char buf[512];
+	const unsigned int drain_timeout_ms = 10;
+
+	drained = 0;
+	do {
+		xfer_len = 0;
+		ret = libusb_bulk_transfer(usb->devhdl, endpoint,
+					   buf, sizeof(buf), &xfer_len,
+					   drain_timeout_ms);
+		drained += xfer_len;
+	} while (ret == LIBUSB_SUCCESS && xfer_len != 0);
+
+	if (ret != LIBUSB_SUCCESS && ret != LIBUSB_ERROR_TIMEOUT) {
+		sr_err("Failed to drain USB endpoint %u: %s.",
+		       endpoint & (LIBUSB_ENDPOINT_IN - 1),
+		       libusb_error_name(ret));
+		return SR_ERR;
+	}
+	if (drained > 0) {
+		sr_warn("Drained %d bytes from USB endpoint %u.",
+			drained, endpoint & (LIBUSB_ENDPOINT_IN - 1));
+	}
+
+	return SR_OK;
+}
+
+/* Open and initialize device.
+ */
 static int dev_open(struct sr_dev_inst *sdi)
 {
 	struct drv_context *drvc;
+	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
-	int ret;
+	int i, ret;
 
-	drvc = di->context;
+	drvc = sdi->driver->context;
+	devc = sdi->priv;
+	usb = sdi->conn;
 
-	if (!drvc) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
 	if (sdi->status != SR_ST_INACTIVE) {
 		sr_err("Device already open.");
 		return SR_ERR;
 	}
-	usb = sdi->conn;
 
-	ret = sr_usb_open(drvc->sr_ctx->libusb_ctx, usb);
-	if (ret != SR_OK)
-		return ret;
+	/* Try the whole shebang three times, fingers crossed. */
+	for (i = 0; i < 3; i++) {
+		ret = sr_usb_open(drvc->sr_ctx->libusb_ctx, usb);
+		if (ret != SR_OK)
+			return ret;
 
-	/* Set the configuration twice to trigger a lightweight reset.
-	 */
-	ret = libusb_set_configuration(usb->devhdl, USB_CONFIG);
-	if (ret == 0)
 		ret = libusb_set_configuration(usb->devhdl, USB_CONFIG);
-	if (ret != 0) {
-		sr_err("Failed to set USB configuration: %s.",
-			libusb_error_name(ret));
-		sr_usb_close(usb);
-		return SR_ERR;
-	}
+		if (ret != LIBUSB_SUCCESS) {
+			sr_err("Failed to set USB configuration: %s.",
+				libusb_error_name(ret));
+			sr_usb_close(usb);
+			return SR_ERR;
+		}
 
-	ret = libusb_claim_interface(usb->devhdl, USB_INTERFACE);
-	if (ret < 0) {
-		sr_err("Failed to claim interface: %s.",
-			libusb_error_name(ret));
-		sr_usb_close(usb);
-		return SR_ERR;
-	}
-	sdi->status = SR_ST_ACTIVE;
+		ret = libusb_claim_interface(usb->devhdl, USB_INTERFACE);
+		if (ret != LIBUSB_SUCCESS) {
+			sr_err("Failed to claim interface: %s.",
+				libusb_error_name(ret));
+			sr_usb_close(usb);
+			return SR_ERR;
+		}
 
-	ret = lwla_init_device(sdi);
-	if (ret != SR_OK) {
-		sr_usb_close(usb);
+		ret = drain_usb(usb, EP_REPLY);
+		if (ret != SR_OK) {
+			sr_usb_close(usb);
+			return ret;
+		}
+		/* This delay appears to be necessary for reliable operation. */
+		g_usleep(30 * 1000);
+
+		sdi->status = SR_ST_ACTIVE;
+
+		devc->active_fpga_config = FPGA_NOCONF;
+		devc->short_transfer_quirk = FALSE;
+		devc->state = STATE_IDLE;
+
+		ret = (*devc->model->apply_fpga_config)(sdi);
+
+		if (ret == SR_OK)
+			ret = (*devc->model->device_init_check)(sdi);
+		if (ret == SR_OK)
+			break;
+
+		/* Rinse and repeat. */
 		sdi->status = SR_ST_INACTIVE;
+		sr_usb_close(usb);
 	}
+
+	if (ret == SR_OK && devc->short_transfer_quirk)
+		sr_warn("Short transfer quirk detected! "
+			"Memory reads will be slow.");
 	return ret;
 }
 
+/* Shutdown and close device.
+ */
 static int dev_close(struct sr_dev_inst *sdi)
 {
-	struct sr_usb_dev_inst *usb;
 	struct dev_context *devc;
+	struct sr_usb_dev_inst *usb;
 	int ret;
 
-	if (!di->context) {
-		sr_err("Driver was not initialized.");
-		return SR_ERR;
-	}
-	usb = sdi->conn;
 	devc = sdi->priv;
+	usb = sdi->conn;
 
-	if (sdi->status == SR_ST_INACTIVE)
+	if (sdi->status == SR_ST_INACTIVE) {
+		sr_dbg("Device already closed.");
 		return SR_OK;
-
-	if (devc && devc->acquisition) {
-		sr_err("Attempt to close device during acquisition.");
-		return SR_ERR;
 	}
+	if (devc->acquisition) {
+		sr_err("Cannot close device during acquisition!");
+		/* Request stop, leak handle, and prepare for the worst. */
+		devc->cancel_requested = TRUE;
+		return SR_ERR_BUG;
+	}
+
 	sdi->status = SR_ST_INACTIVE;
 
-	/* Trigger download of the shutdown bitstream. */
-	ret = lwla_set_clock_config(sdi);
+	/* Download of the shutdown bitstream, if any. */
+	ret = (*devc->model->apply_fpga_config)(sdi);
 	if (ret != SR_OK)
-		sr_err("Unable to shut down device.");
+		sr_warn("Unable to shut down device.");
 
 	libusb_release_interface(usb->devhdl, USB_INTERFACE);
 	sr_usb_close(usb);
@@ -265,16 +367,28 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return ret;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
+/* Check whether the device options contain a specific key.
+ * Also match against get/set/list bits if specified.
+ */
+static int has_devopt(const struct model_info *model, uint32_t key)
 {
-	return dev_clear(di);
+	unsigned int i;
+
+	for (i = 0; i < model->num_devopts; i++) {
+		if ((model->devopts[i] & (SR_CONF_MASK | key)) == key)
+			return TRUE;
+	}
+
+	return FALSE;
 }
 
+/* Read device configuration setting.
+ */
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
 		      const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
-	size_t idx;
+	unsigned int idx;
 
 	(void)cg;
 
@@ -282,6 +396,9 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		return SR_ERR_ARG;
 
 	devc = sdi->priv;
+
+	if (!has_devopt(devc->model, key | SR_CONF_GET))
+		return SR_ERR_NA;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
@@ -292,6 +409,9 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		break;
 	case SR_CONF_LIMIT_SAMPLES:
 		*data = g_variant_new_uint64(devc->limit_samples);
+		break;
+	case SR_CONF_RLE:
+		*data = g_variant_new_boolean(devc->cfg_rle);
 		break;
 	case SR_CONF_EXTERNAL_CLOCK:
 		*data = g_variant_new_boolean(devc->cfg_clock_source
@@ -316,7 +436,8 @@ static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *s
 		*data = g_variant_new_string(signal_edge_names[idx]);
 		break;
 	default:
-		return SR_ERR_NA;
+		/* Must not happen for a key listed in devopts. */
+		return SR_ERR_BUG;
 	}
 
 	return SR_OK;
@@ -335,13 +456,16 @@ static int lookup_index(GVariant *value, const char *const *table, int len)
 		return -1;
 
 	/* Linear search is fine for very small tables. */
-	for (i = 0; i < len; ++i) {
+	for (i = 0; i < len; i++) {
 		if (strcmp(entry, table[i]) == 0)
 			return i;
 	}
+
 	return -1;
 }
 
+/* Write device configuration setting.
+ */
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		      const struct sr_channel_group *cg)
 {
@@ -351,15 +475,19 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	(void)cg;
 
+	if (!sdi)
+		return SR_ERR_ARG;
+
 	devc = sdi->priv;
-	if (!devc)
-		return SR_ERR_DEV_CLOSED;
+
+	if (!has_devopt(devc->model, key | SR_CONF_SET))
+		return SR_ERR_NA;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
 		value = g_variant_get_uint64(data);
-		if (value < samplerates[ARRAY_SIZE(samplerates) - 1]
-				|| value > samplerates[0])
+		if (value < devc->model->samplerates[devc->model->num_samplerates - 1]
+				|| value > devc->model->samplerates[0])
 			return SR_ERR_SAMPLERATE;
 		devc->samplerate = value;
 		break;
@@ -374,6 +502,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		if (value > MAX_LIMIT_SAMPLES)
 			return SR_ERR_ARG;
 		devc->limit_samples = value;
+		break;
+	case SR_CONF_RLE:
+		devc->cfg_rle = g_variant_get_boolean(data);
 		break;
 	case SR_CONF_EXTERNAL_CLOCK:
 		devc->cfg_clock_source = (g_variant_get_boolean(data))
@@ -401,30 +532,35 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 		devc->cfg_trigger_slope = idx;
 		break;
 	default:
-		return SR_ERR_NA;
+		/* Must not happen for a key listed in devopts. */
+		return SR_ERR_BUG;
 	}
 
 	return SR_OK;
 }
 
+/* Apply channel configuration change.
+ */
 static int config_channel_set(const struct sr_dev_inst *sdi,
-		struct sr_channel *ch, unsigned int changes)
+			      struct sr_channel *ch, unsigned int changes)
 {
 	uint64_t channel_bit;
 	struct dev_context *devc;
 
-	devc = sdi->priv;
-	if (!devc)
-		return SR_ERR_DEV_CLOSED;
+	if (!sdi)
+		return SR_ERR_ARG;
 
-	if (ch->index < 0 || ch->index >= NUM_CHANNELS) {
+	devc = sdi->priv;
+
+	if (ch->index < 0 || ch->index >= devc->model->num_channels) {
 		sr_err("Channel index %d out of range.", ch->index);
 		return SR_ERR_BUG;
 	}
-	channel_bit = (uint64_t)1 << ch->index;
 
 	if ((changes & SR_CHANNEL_SET_ENABLED) != 0) {
-		/* Enable or disable input channel for this channel. */
+		channel_bit = UINT64_C(1) << ch->index;
+
+		/* Enable or disable logic input for this channel. */
 		if (ch->enabled)
 			devc->channel_mask |= channel_bit;
 		else
@@ -434,17 +570,19 @@ static int config_channel_set(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
+/* Derive trigger masks from the session's trigger configuration.
+ */
 static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 {
-	uint64_t trigger_mask;
-	uint64_t trigger_values;
-	uint64_t trigger_edge_mask;
-	uint64_t channel_bit;
+	uint64_t trigger_mask, trigger_values, trigger_edge_mask;
+	uint64_t level_bit, type_bit;
 	struct dev_context *devc;
 	struct sr_trigger *trigger;
 	struct sr_trigger_stage *stage;
 	struct sr_trigger_match *match;
 	const GSList *node;
+	int idx;
+	enum sr_trigger_matches trg;
 
 	devc = sdi->priv;
 
@@ -466,28 +604,30 @@ static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 		match = node->data;
 
 		if (!match->channel->enabled)
-			continue; /* ignore disabled channel */
+			continue; /* Ignore disabled channel. */
 
-		channel_bit = (uint64_t)1 << match->channel->index;
-		trigger_mask |= channel_bit;
+		idx = match->channel->index;
+		trg = match->match;
 
-		switch (match->match) {
-		case SR_TRIGGER_ZERO:
-			break;
-		case SR_TRIGGER_ONE:
-			trigger_values |= channel_bit;
-			break;
-		case SR_TRIGGER_RISING:
-			trigger_values |= channel_bit;
-			/* Fall through for edge mask. */
-		case SR_TRIGGER_FALLING:
-			trigger_edge_mask |= channel_bit;
-			break;
-		default:
-			sr_err("Unsupported trigger match for CH%d.",
-				match->channel->index + 1);
+		if (idx < 0 || idx >= devc->model->num_channels) {
+			sr_err("Channel index %d out of range.", idx);
+			return SR_ERR_BUG; /* Should not happen. */
+		}
+		if (trg != SR_TRIGGER_ZERO
+				&& trg != SR_TRIGGER_ONE
+				&& trg != SR_TRIGGER_RISING
+				&& trg != SR_TRIGGER_FALLING) {
+			sr_err("Unsupported trigger match for CH%d.", idx + 1);
 			return SR_ERR_ARG;
 		}
+		level_bit = (trg == SR_TRIGGER_ONE
+			|| trg == SR_TRIGGER_RISING) ? 1 : 0;
+		type_bit = (trg == SR_TRIGGER_RISING
+			|| trg == SR_TRIGGER_FALLING) ? 1 : 0;
+
+		trigger_mask |= UINT64_C(1) << idx;
+		trigger_values |= level_bit << idx;
+		trigger_edge_mask |= type_bit << idx;
 	}
 	devc->trigger_mask = trigger_mask;
 	devc->trigger_values = trigger_values;
@@ -496,154 +636,150 @@ static int prepare_trigger_masks(const struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
+/* Apply current device configuration to the hardware.
+ */
 static int config_commit(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-	int rc;
+	int ret;
+
+	devc = sdi->priv;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	devc = sdi->priv;
 	if (devc->acquisition) {
 		sr_err("Acquisition still in progress?");
 		return SR_ERR;
 	}
-	rc = prepare_trigger_masks(sdi);
-	if (rc != SR_OK)
-		return rc;
 
-	return lwla_set_clock_config(sdi);
+	ret = prepare_trigger_masks(sdi);
+	if (ret != SR_OK)
+		return ret;
+
+	ret = (*devc->model->apply_fpga_config)(sdi);
+	if (ret != SR_OK) {
+		sr_err("Failed to apply FPGA configuration.");
+		return ret;
+	}
+
+	return SR_OK;
 }
 
-static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
+/* List available choices for a configuration setting.
+ */
+static int config_list(uint32_t key, GVariant **data,
+		       const struct sr_dev_inst *sdi,
 		       const struct sr_channel_group *cg)
 {
+	struct dev_context *devc;
 	GVariant *gvar;
 	GVariantBuilder gvb;
 
-	(void)sdi;
 	(void)cg;
 
+	if (key == SR_CONF_SCAN_OPTIONS) {
+		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+			scanopts, ARRAY_SIZE(scanopts), sizeof(scanopts[0]));
+		return SR_OK;
+	}
+	if (!sdi) {
+		if (key != SR_CONF_DEVICE_OPTIONS)
+			return SR_ERR_ARG;
+
+		/* List driver capabilities. */
+		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+			drvopts, ARRAY_SIZE(drvopts), sizeof(drvopts[0]));
+		return SR_OK;
+	}
+
+	devc = sdi->priv;
+
+	/* List the model's device options. */
+	if (key == SR_CONF_DEVICE_OPTIONS) {
+		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+			devc->model->devopts, devc->model->num_devopts,
+			sizeof(devc->model->devopts[0]));
+		return SR_OK;
+	}
+
+	if (!has_devopt(devc->model, key | SR_CONF_LIST))
+		return SR_ERR_NA;
+
 	switch (key) {
-	case SR_CONF_SCAN_OPTIONS:
-		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-				scanopts, ARRAY_SIZE(scanopts), sizeof(uint32_t));
-		break;
-	case SR_CONF_DEVICE_OPTIONS:
-		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-				devopts, ARRAY_SIZE(devopts), sizeof(uint32_t));
-		break;
 	case SR_CONF_SAMPLERATE:
-		g_variant_builder_init(&gvb, G_VARIANT_TYPE("a{sv}"));
-		gvar = g_variant_new_fixed_array(G_VARIANT_TYPE("t"),
-				samplerates, ARRAY_SIZE(samplerates),
-				sizeof(uint64_t));
+		g_variant_builder_init(&gvb, G_VARIANT_TYPE_VARDICT);
+		gvar = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT64,
+			devc->model->samplerates, devc->model->num_samplerates,
+			sizeof(devc->model->samplerates[0]));
 		g_variant_builder_add(&gvb, "{sv}", "samplerates", gvar);
 		*data = g_variant_builder_end(&gvb);
 		break;
 	case SR_CONF_TRIGGER_MATCH:
 		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_INT32,
-				trigger_matches, ARRAY_SIZE(trigger_matches),
-				sizeof(int32_t));
+			trigger_matches, ARRAY_SIZE(trigger_matches),
+			sizeof(trigger_matches[0]));
 		break;
 	case SR_CONF_TRIGGER_SOURCE:
 		*data = g_variant_new_strv(trigger_source_names,
-					   ARRAY_SIZE(trigger_source_names));
+			ARRAY_SIZE(trigger_source_names));
 		break;
 	case SR_CONF_TRIGGER_SLOPE:
 	case SR_CONF_CLOCK_EDGE:
 		*data = g_variant_new_strv(signal_edge_names,
-					   ARRAY_SIZE(signal_edge_names));
+			ARRAY_SIZE(signal_edge_names));
 		break;
 	default:
-		return SR_ERR_NA;
+		/* Must not happen for a key listed in devopts. */
+		return SR_ERR_BUG;
 	}
 
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+/* Set up the device hardware to begin capturing samples as soon as the
+ * configured trigger conditions are met, or immediately if no triggers
+ * are configured.
+ */
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
-	struct drv_context *drvc;
-	struct dev_context *devc;
-	struct acquisition_state *acq;
-	int ret;
-
-	(void)cb_data;
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
-
-	devc = sdi->priv;
-	drvc = di->context;
-
-	if (devc->acquisition) {
-		sr_err("Acquisition still in progress?");
-		return SR_ERR;
-	}
-	acq = lwla_alloc_acquisition_state();
-	if (!acq)
-		return SR_ERR_MALLOC;
-
-	devc->cancel_requested = FALSE;
-	devc->stopping_in_progress = FALSE;
-	devc->transfer_error = FALSE;
 
 	sr_info("Starting acquisition.");
 
-	devc->acquisition = acq;
-	ret = lwla_setup_acquisition(sdi);
-	if (ret != SR_OK) {
-		sr_err("Failed to set up acquisition.");
-		devc->acquisition = NULL;
-		lwla_free_acquisition_state(acq);
-		return ret;
-	}
-
-	ret = lwla_start_acquisition(sdi);
-	if (ret != SR_OK) {
-		sr_err("Failed to start acquisition.");
-		devc->acquisition = NULL;
-		lwla_free_acquisition_state(acq);
-		return ret;
-	}
-	usb_source_add(sdi->session, drvc->sr_ctx, 100, &lwla_receive_data,
-		       (struct sr_dev_inst *)sdi);
-
-	sr_info("Waiting for data.");
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
-
-	return SR_OK;
+	return lwla_start_acquisition(sdi);
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+/* Request that a running capture operation be stopped.
+ */
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 
-	(void)cb_data;
 	devc = sdi->priv;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (devc->acquisition && !devc->cancel_requested) {
+	if (devc->state != STATE_IDLE && !devc->cancel_requested) {
 		devc->cancel_requested = TRUE;
 		sr_dbg("Stopping acquisition.");
 	}
+
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver sysclk_lwla_driver_info = {
+/* SysClk LWLA driver descriptor.
+ */
+static struct sr_dev_driver sysclk_lwla_driver_info = {
 	.name = "sysclk-lwla",
 	.longname = "SysClk LWLA series",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -656,3 +792,4 @@ SR_PRIV struct sr_dev_driver sysclk_lwla_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(sysclk_lwla_driver_info);

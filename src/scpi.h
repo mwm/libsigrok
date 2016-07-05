@@ -56,6 +56,13 @@ enum {
 	SCPI_CMD_GET_DIG_DATA,
 	SCPI_CMD_GET_SAMPLE_RATE,
 	SCPI_CMD_GET_SAMPLE_RATE_LIVE,
+	SCPI_CMD_GET_DATA_FORMAT,
+	SCPI_CMD_GET_PROBE_FACTOR,
+	SCPI_CMD_SET_PROBE_FACTOR,
+	SCPI_CMD_GET_PROBE_UNIT,
+	SCPI_CMD_SET_PROBE_UNIT,
+	SCPI_CMD_GET_ANALOG_CHAN_NAME,
+	SCPI_CMD_GET_DIG_CHAN_NAME,
 };
 
 struct scpi_command {
@@ -128,6 +135,10 @@ SR_PRIV int sr_scpi_get_floatv(struct sr_scpi_dev_inst *scpi,
 			const char *command, GArray **scpi_response);
 SR_PRIV int sr_scpi_get_uint8v(struct sr_scpi_dev_inst *scpi,
 			const char *command, GArray **scpi_response);
+SR_PRIV int sr_scpi_get_data(struct sr_scpi_dev_inst *scpi,
+			const char *command, GString **scpi_response);
+SR_PRIV int sr_scpi_get_block(struct sr_scpi_dev_inst *scpi,
+			const char *command, GByteArray **scpi_response);
 SR_PRIV int sr_scpi_get_hw_id(struct sr_scpi_dev_inst *scpi,
 			struct sr_scpi_hw_info **scpi_response);
 SR_PRIV void sr_scpi_hw_info_free(struct sr_scpi_hw_info *hw_info);

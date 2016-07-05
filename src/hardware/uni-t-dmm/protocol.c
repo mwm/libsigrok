@@ -57,14 +57,17 @@ static void decode_packet(struct sr_dev_inst *sdi, const uint8_t *buf)
 	struct dev_context *devc;
 	struct dmm_info *dmm;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	float floatval;
 	void *info;
 	int ret;
 
 	devc = sdi->priv;
 	dmm = (struct dmm_info *)sdi->driver;
-	memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
 	info = g_malloc(dmm->info_size);
 
 	/* Parse the protocol packet. */
@@ -82,15 +85,14 @@ static void decode_packet(struct sr_dev_inst *sdi, const uint8_t *buf)
 	g_free(info);
 
 	/* Send a sample packet with one analog value. */
-	analog.channels = sdi->channels;
+	analog.meaning->channels = sdi->channels;
 	analog.num_samples = 1;
 	analog.data = &floatval;
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 
-	/* Increase sample count. */
-	devc->num_samples++;
+	sr_sw_limits_update_samples_read(&devc->limits, 1);
 }
 
 static int hid_chip_init(struct sr_dev_inst *sdi, uint16_t baudrate)
@@ -274,7 +276,6 @@ SR_PRIV int uni_t_dmm_receive_data(int fd, int revents, void *cb_data)
 	int ret;
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
-	int64_t time_ms;
 
 	(void)fd;
 	(void)revents;
@@ -286,19 +287,8 @@ SR_PRIV int uni_t_dmm_receive_data(int fd, int revents, void *cb_data)
 		return FALSE;
 
 	/* Abort acquisition if we acquired enough samples. */
-	if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-		sr_info("Requested number of samples reached.");
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-	}
-
-	if (devc->limit_msec) {
-		time_ms = (g_get_monotonic_time() - devc->starttime) / 1000;
-		if (time_ms > (int64_t)devc->limit_msec) {
-			sr_info("Requested time limit reached.");
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-			return TRUE;
-		}
-	}
+	if (sr_sw_limits_check(&devc->limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	return TRUE;
 }

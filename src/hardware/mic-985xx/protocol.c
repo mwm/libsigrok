@@ -127,7 +127,7 @@ static int handle_packet(const uint8_t *buf, struct sr_dev_inst *sdi, int idx)
 	meaning.mq = SR_MQ_TEMPERATURE;
 	meaning.unit = SR_UNIT_CELSIUS; /* TODO: Use C/F correctly. */
 	analog.data = &temperature;
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 	g_slist_free(l);
 
 	/* Humidity. */
@@ -138,11 +138,11 @@ static int handle_packet(const uint8_t *buf, struct sr_dev_inst *sdi, int idx)
 		meaning.mq = SR_MQ_RELATIVE_HUMIDITY;
 		meaning.unit = SR_UNIT_PERCENTAGE;
 		analog.data = &humidity;
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 		g_slist_free(l);
 	}
 
-	devc->num_samples++;
+	sr_sw_limits_update_samples_read(&devc->limits, 1);
 
 	return SR_OK;
 }
@@ -186,7 +186,6 @@ static int receive_data(int fd, int revents, int idx, void *cb_data)
 {
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
-	int64_t t;
 	static gboolean first_time = TRUE;
 	struct sr_serial_dev_inst *serial;
 
@@ -211,20 +210,8 @@ static int receive_data(int fd, int revents, int idx, void *cb_data)
 		}
 	}
 
-	if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-		sr_info("Requested number of samples reached.");
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-		return TRUE;
-	}
-
-	if (devc->limit_msec) {
-		t = (g_get_monotonic_time() - devc->starttime) / 1000;
-		if (t > (int64_t)devc->limit_msec) {
-			sr_info("Requested time limit reached.");
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-			return TRUE;
-		}
-	}
+	if (sr_sw_limits_check(&devc->limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	return TRUE;
 }

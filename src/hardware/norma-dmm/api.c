@@ -41,15 +41,12 @@ static const uint32_t devopts[] = {
 
 #define SERIALCOMM "4800/8n1/dtr=1/rts=0/flow=1"
 
-SR_PRIV struct sr_dev_driver norma_dmm_driver_info;
-SR_PRIV struct sr_dev_driver siemens_b102x_driver_info;
+static struct sr_dev_driver norma_dmm_driver_info;
+static struct sr_dev_driver siemens_b102x_driver_info;
 
 static const char *get_brandstr(struct sr_dev_driver *drv)
 {
-	if (drv == &norma_dmm_driver_info)
-		return "Norma";
-	else
-		return "Siemens";
+	return (drv == &norma_dmm_driver_info) ? "Norma" : "Siemens";
 }
 
 static const char *get_typestr(int type, struct sr_dev_driver *drv)
@@ -59,36 +56,28 @@ static const char *get_typestr(int type, struct sr_dev_driver *drv)
 		{"DM920", "B1025"},
 		{"DM930", "B1026"},
 		{"DM940", "B1027"},
-		{"DM950", "B1028"}};
+		{"DM950", "B1028"},
+	};
 
 	if ((type < 1) || (type > 5))
 		return "Unknown type!";
 
-	return nameref[type-1][(drv == &siemens_b102x_driver_info)];
-}
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
+	return nameref[type - 1][(drv == &siemens_b102x_driver_info)];
 }
 
 static GSList *scan(struct sr_dev_driver *drv, GSList *options)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_config *src;
 	struct sr_serial_dev_inst *serial;
 	GSList *l, *devices;
-	int len, cnt;
+	int len, cnt, auxtype;
 	const char *conn, *serialcomm;
 	char *buf;
 	char req[10];
-	int auxtype;
 
 	devices = NULL;
-	drvc = drv->context;
-	drvc->instances = NULL;
 	conn = serialcomm = NULL;
 
 	for (l = options; l; l = l->next) {
@@ -131,7 +120,7 @@ static GSList *scan(struct sr_dev_driver *drv, GSList *options)
 			continue;
 		buf[BUF_MAX - 1] = '\0';
 
-		/* Match ID string, e.g. "1834 065 V1.06,IF V1.02" (DM950) */
+		/* Match ID string, e.g. "1834 065 V1.06,IF V1.02" (DM950). */
 		if (g_regex_match_simple("^1834 [^,]*,IF V*", (char *)buf, 0, 0)) {
 			auxtype = xgittoint(buf[7]);
 			sr_spew("%s %s DMM %s detected!", get_brandstr(drv), get_typestr(auxtype, drv), buf + 9);
@@ -142,14 +131,11 @@ static GSList *scan(struct sr_dev_driver *drv, GSList *options)
 			sdi->model = g_strdup(get_typestr(auxtype, drv));
 			sdi->version = g_strdup(buf + 9);
 			devc = g_malloc0(sizeof(struct dev_context));
+			sr_sw_limits_init(&devc->limits);
 			devc->type = auxtype;
-			devc->version = g_strdup(&buf[9]);
-			devc->elapsed_msec = g_timer_new();
 			sdi->conn = serial;
 			sdi->priv = devc;
-			sdi->driver = drv;
 			sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
-			drvc->instances = g_slist_append(drvc->instances, sdi);
 			devices = g_slist_append(devices, sdi);
 			break;
 		}
@@ -172,33 +158,7 @@ static GSList *scan(struct sr_dev_driver *drv, GSList *options)
 	if (!devices)
 		sr_serial_dev_inst_free(serial);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int dev_close(struct sr_dev_inst *sdi)
-{
-	struct dev_context *devc;
-
-	std_serial_dev_close(sdi);
-
-	/* Free dynamically allocated resources. */
-	if ((devc = sdi->priv) && devc->version) {
-		g_free(devc->version);
-		devc->version = NULL;
-		g_timer_destroy(devc->elapsed_msec);
-	}
-
-	return SR_OK;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
+	return std_scan_complete(drv, devices);
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -211,23 +171,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -252,25 +198,18 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 
-	if (!sdi || !cb_data || !(devc = sdi->priv))
-		return SR_ERR_BUG;
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	devc->cb_data = cb_data;
+	devc = sdi->priv;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
-
-	/* Start timer, if required. */
-	if (devc->limit_msec)
-		g_timer_start(devc->elapsed_msec);
+	sr_sw_limits_acquisition_start(&devc->limits);
+	std_session_send_df_header(sdi);
 
 	/* Poll every 100ms, or whenever some data comes in. */
 	serial = sdi->conn;
@@ -280,52 +219,42 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	struct dev_context *devc;
-
-	/* Stop timer, if required. */
-	if (sdi && (devc = sdi->priv) && devc->limit_msec)
-		g_timer_stop(devc->elapsed_msec);
-
-	return std_serial_dev_acquisition_stop(sdi, cb_data, dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver norma_dmm_driver_info = {
+static struct sr_dev_driver norma_dmm_driver_info = {
 	.name = "norma-dmm",
 	.longname = "Norma DM9x0 DMMs",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
 	.config_list = config_list,
 	.dev_open = std_serial_dev_open,
-	.dev_close = dev_close,
+	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(norma_dmm_driver_info);
 
-SR_PRIV struct sr_dev_driver siemens_b102x_driver_info = {
+static struct sr_dev_driver siemens_b102x_driver_info = {
 	.name = "siemens-b102x",
 	.longname = "Siemens B102x DMMs",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
 	.config_list = config_list,
 	.dev_open = std_serial_dev_open,
-	.dev_close = dev_close,
+	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(siemens_b102x_driver_info);

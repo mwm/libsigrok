@@ -51,11 +51,14 @@ static const struct zp_model zeroplus_models[] = {
 	{0x0c12, 0x700e, "LAP-C(16032)",  16, 32,   100},
 	{0x0c12, 0x7016, "LAP-C(162000)", 16, 2048, 200},
 	{0x0c12, 0x7100, "AKIP-9101", 16, 256, 200},
-	{ 0, 0, 0, 0, 0, 0 }
+	ALL_ZERO
+};
+
+static const uint32_t drvopts[] = {
+	SR_CONF_LOGIC_ANALYZER,
 };
 
 static const uint32_t devopts[] = {
-	SR_CONF_LOGIC_ANALYZER,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_SAMPLERATE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_MATCH | SR_CONF_LIST,
@@ -78,8 +81,6 @@ static const char *channel_names[] = {
 	"C0", "C1", "C2", "C3", "C4", "C5", "C6", "C7",
 	"D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7",
 };
-
-SR_PRIV struct sr_dev_driver zeroplus_logic_cube_driver_info;
 
 /*
  * The hardware supports more samplerates than these, but these are the
@@ -155,11 +156,6 @@ SR_PRIV int zp_set_samplerate(struct dev_context *devc, uint64_t samplerate)
 	return SR_OK;
 }
 
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct sr_dev_inst *sdi;
@@ -219,7 +215,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sdi->status = SR_ST_INACTIVE;
 		sdi->vendor = g_strdup(VENDOR_NAME);
 		sdi->model = g_strdup(prof->model_name);
-		sdi->driver = di;
 		sdi->serial_num = g_strdup(serial_num);
 		sdi->connection_id = g_strdup(connection_id);
 
@@ -245,7 +240,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 					channel_names[j]);
 
 		devices = g_slist_append(devices, sdi);
-		drvc->instances = g_slist_append(drvc->instances, sdi);
 		sdi->inst_type = SR_INST_USB;
 		sdi->conn = sr_usb_dev_inst_new(
 			libusb_get_bus_number(devlist[i]),
@@ -253,12 +247,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	}
 	libusb_free_device_list(devlist, 1);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
+	return std_scan_complete(di, devices);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -267,47 +256,17 @@ static int dev_open(struct sr_dev_inst *sdi)
 	struct dev_context *devc;
 	struct drv_context *drvc;
 	struct sr_usb_dev_inst *usb;
-	libusb_device **devlist, *dev;
-	int device_count, ret, i;
-	char connection_id[64];
+	int ret;
 
 	drvc = di->context;
 	usb = sdi->conn;
+	devc = sdi->priv;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("%s: sdi->priv was NULL", __func__);
-		return SR_ERR_ARG;
-	}
+	ret = sr_usb_open(drvc->sr_ctx->libusb_ctx, usb);
+	if (ret != SR_OK)
+		return ret;
 
-	device_count = libusb_get_device_list(drvc->sr_ctx->libusb_ctx,
-					      &devlist);
-	if (device_count < 0) {
-		sr_err("Failed to retrieve device list.");
-		return SR_ERR;
-	}
-
-	dev = NULL;
-	for (i = 0; i < device_count; i++) {
-		usb_get_port_path(devlist[i], connection_id, sizeof(connection_id));
-		if (!strcmp(sdi->connection_id, connection_id)) {
-			dev = devlist[i];
-			break;
-		}
-	}
-	if (!dev) {
-		sr_err("Device on %d.%d (logical) / %s (physical) disappeared!",
-		       usb->bus, usb->address, sdi->connection_id);
-		return SR_ERR;
-	}
-
-	if (!(ret = libusb_open(dev, &(usb->devhdl)))) {
-		sdi->status = SR_ST_ACTIVE;
-		sr_info("Opened device on %d.%d (logical) / %s (physical) interface %d.",
-			usb->bus, usb->address, sdi->connection_id, USB_INTERFACE);
-	} else {
-		sr_err("Failed to open device: %s.", libusb_error_name(ret));
-		return SR_ERR;
-	}
+	sdi->status = SR_ST_ACTIVE;
 
 	ret = libusb_set_configuration(usb->devhdl, USB_CONFIGURATION);
 	if (ret < 0) {
@@ -377,11 +336,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
-}
-
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -425,10 +379,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("%s: sdi->priv was NULL", __func__);
-		return SR_ERR_ARG;
-	}
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_SAMPLERATE:
@@ -460,8 +411,13 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 
 	switch (key) {
 	case SR_CONF_DEVICE_OPTIONS:
-		*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-				devopts, ARRAY_SIZE(devopts), sizeof(uint32_t));
+		if (!sdi) {
+			*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+							  drvopts, ARRAY_SIZE(drvopts), sizeof(uint32_t));
+		} else {
+			*data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+							  devopts, ARRAY_SIZE(devopts), sizeof(uint32_t));
+		}
 		break;
 	case SR_CONF_SAMPLERATE:
 		devc = sdi->priv;
@@ -512,8 +468,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
@@ -538,10 +493,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("%s: sdi->priv was NULL", __func__);
-		return SR_ERR_ARG;
-	}
+	devc = sdi->priv;
 
 	if (analyzer_add_triggers(sdi) != SR_OK) {
 		sr_err("Failed to configure triggers.");
@@ -578,13 +530,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	sr_info("Ramsize trigger    = 0x%x.", ramsize_trigger);
 	sr_info("Memory size        = 0x%x.", memory_size);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Check for empty capture */
 	if ((status & STATUS_READY) && !stop_address) {
-		packet.type = SR_DF_END;
-		sr_session_send(cb_data, &packet);
+		std_session_send_df_end(sdi);
 		return SR_OK;
 	}
 
@@ -667,7 +617,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 			logic.length = (trigger_offset - samples_read) * 4;
 			logic.unitsize = 4;
 			logic.data = buf + buf_offset;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 			len -= logic.length;
 			samples_read += logic.length / 4;
 			buf_offset += logic.length;
@@ -677,7 +627,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 			/* Send out trigger */
 			packet.type = SR_DF_TRIGGER;
 			packet.payload = NULL;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		}
 
 		/* Send out data (or data after trigger) */
@@ -686,32 +636,23 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 		logic.length = len;
 		logic.unitsize = 4;
 		logic.data = buf + buf_offset;
-		sr_session_send(cb_data, &packet);
+		sr_session_send(sdi, &packet);
 		samples_read += len / 4;
 	}
 	analyzer_read_stop(usb->devhdl);
 	g_free(buf);
 
-	packet.type = SR_DF_END;
-	sr_session_send(cb_data, &packet);
+	std_session_send_df_end(sdi);
 
 	return SR_OK;
 }
 
 /* TODO: This stops acquisition on ALL devices, ignoring dev_index. */
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct dev_context *devc;
 	struct sr_usb_dev_inst *usb;
-	struct sr_datafeed_packet packet;
 
-	packet.type = SR_DF_END;
-	sr_session_send(cb_data, &packet);
-
-	if (!(devc = sdi->priv)) {
-		sr_err("%s: sdi->priv was NULL", __func__);
-		return SR_ERR_BUG;
-	}
+	std_session_send_df_end(sdi);
 
 	usb = sdi->conn;
 	analyzer_reset(usb->devhdl);
@@ -720,14 +661,14 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver zeroplus_logic_cube_driver_info = {
+static struct sr_dev_driver zeroplus_logic_cube_driver_info = {
 	.name = "zeroplus-logic-cube",
 	.longname = "ZEROPLUS Logic Cube LAP-C series",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -738,3 +679,4 @@ SR_PRIV struct sr_dev_driver zeroplus_logic_cube_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(zeroplus_logic_cube_driver_info);

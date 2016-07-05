@@ -171,12 +171,14 @@ static struct sr_key_info sr_key_info_config[] = {
 		"Equivalent circuit model", NULL},
 	{SR_CONF_OVER_TEMPERATURE_PROTECTION_ACTIVE, SR_T_BOOL, "otp_active",
 		"Over-temperature protection active", NULL},
+	{SR_CONF_UNDER_VOLTAGE_CONDITION, SR_T_BOOL, "uvc",
+		"Under-voltage condition", NULL},
+	{SR_CONF_UNDER_VOLTAGE_CONDITION_ACTIVE, SR_T_BOOL, "uvc_active",
+		"Under-voltage condition active", NULL},
+	{SR_CONF_TRIGGER_LEVEL, SR_T_FLOAT, "triggerlevel",
+		"Trigger level", NULL},
 
 	/* Special stuff */
-	{SR_CONF_SCAN_OPTIONS, SR_T_STRING, "scan_options",
-		"Scan options", NULL},
-	{SR_CONF_DEVICE_OPTIONS, SR_T_STRING, "device_options",
-		"Device options", NULL},
 	{SR_CONF_SESSIONFILE, SR_T_STRING, "sessionfile",
 		"Session file", NULL},
 	{SR_CONF_CAPTUREFILE, SR_T_STRING, "capturefile",
@@ -189,6 +191,8 @@ static struct sr_key_info sr_key_info_config[] = {
 		"Data source", NULL},
 	{SR_CONF_PROBE_FACTOR, SR_T_UINT64, "probe_factor",
 		"Probe factor", NULL},
+	{SR_CONF_ADC_POWERLINE_CYCLES, SR_T_FLOAT, "nplc",
+		"Number of ADC powerline cycles", NULL},
 
 	/* Acquisition modes, sample limiting */
 	{SR_CONF_LIMIT_MSEC, SR_T_UINT64, "limit_time",
@@ -197,7 +201,7 @@ static struct sr_key_info sr_key_info_config[] = {
 		"Sample limit", NULL},
 	{SR_CONF_LIMIT_FRAMES, SR_T_UINT64, "limit_frames",
 		"Frame limit", NULL},
-	{SR_CONF_CONTINUOUS, SR_T_UINT64, "continuous",
+	{SR_CONF_CONTINUOUS, SR_T_BOOL, "continuous",
 		"Continuous sampling", NULL},
 	{SR_CONF_DATALOG, SR_T_BOOL, "datalog",
 		"Datalog", NULL},
@@ -206,7 +210,7 @@ static struct sr_key_info sr_key_info_config[] = {
 	{SR_CONF_TEST_MODE, SR_T_STRING, "test_mode",
 		"Test mode", NULL},
 
-	{0, 0, NULL, NULL, NULL},
+	ALL_ZERO
 };
 
 /* Please use the same order as in enum sr_mq (libsigrok.h). */
@@ -276,6 +280,7 @@ static struct sr_key_info sr_key_info_mqflag[] = {
 	{SR_MQFLAG_AVG, 0, "average", "Average", NULL},
 	{SR_MQFLAG_REFERENCE, 0, "reference", "Reference", NULL},
 	{SR_MQFLAG_UNSTABLE, 0, "unstable", "Unstable", NULL},
+	{SR_MQFLAG_FOUR_WIRE, 0, "four_wire", "4-Wire", NULL},
 	ALL_ZERO
 };
 
@@ -390,6 +395,43 @@ SR_API int sr_driver_init(struct sr_context *ctx, struct sr_dev_driver *driver)
 		sr_err("Failed to initialize the driver: %d.", ret);
 
 	return ret;
+}
+
+/**
+ * Enumerate scan options supported by this driver.
+ *
+ * Before calling sr_driver_scan_options_list(), the user must have previously
+ * initialized the driver by calling sr_driver_init().
+ *
+ * @param driver The driver to enumerate options for. This must be a pointer
+ *               to one of the entries returned by sr_driver_list(). Must not
+ *               be NULL.
+ *
+ * @return A GArray * of uint32_t entries, or NULL on invalid arguments. Each
+ *         entry is a configuration key that is supported as a scan option.
+ *         The array must be freed by the caller using g_array_free().
+ *
+ * @since 0.4.0
+ */
+SR_API GArray *sr_driver_scan_options_list(const struct sr_dev_driver *driver)
+{
+	GVariant *gvar;
+	const uint32_t *opts;
+	gsize num_opts;
+	GArray *result;
+
+	if (sr_config_list(driver, NULL, NULL, SR_CONF_SCAN_OPTIONS, &gvar) != SR_OK)
+		return NULL;
+
+	opts = g_variant_get_fixed_array(gvar, &num_opts, sizeof(uint32_t));
+
+	result = g_array_sized_new(FALSE, FALSE, sizeof(uint32_t), num_opts);
+
+	g_array_insert_vals(result, 0, opts, num_opts);
+
+	g_variant_unref(gvar);
+
+	return result;
 }
 
 static int check_options(struct sr_dev_driver *driver, GSList *options,
@@ -547,6 +589,7 @@ static void log_key(const struct sr_dev_inst *sdi,
 {
 	const char *opstr;
 	const struct sr_key_info *srci;
+	gchar *tmp_str;
 
 	/* Don't log SR_CONF_DEVICE_OPTIONS, it's verbose and not too useful. */
 	if (key == SR_CONF_DEVICE_OPTIONS)
@@ -555,9 +598,11 @@ static void log_key(const struct sr_dev_inst *sdi,
 	opstr = op == SR_CONF_GET ? "get" : op == SR_CONF_SET ? "set" : "list";
 	srci = sr_key_info_get(SR_KEY_CONFIG, key);
 
+	tmp_str = g_variant_print(data, TRUE);
 	sr_spew("sr_config_%s(): key %d (%s) sdi %p cg %s -> %s", opstr, key,
 		srci ? srci->id : "NULL", sdi, cg ? cg->name : "NULL",
-		data ? g_variant_print(data, TRUE) : "NULL");
+		data ? tmp_str : "NULL");
+	g_free(tmp_str);
 }
 
 static int check_key(const struct sr_dev_driver *driver,
@@ -629,10 +674,11 @@ static int check_key(const struct sr_dev_driver *driver,
 /**
  * Query value of a configuration key at the given driver or device instance.
  *
- * @param[in] driver The sr_dev_driver struct to query.
+ * @param[in] driver The sr_dev_driver struct to query. Must not be NULL.
  * @param[in] sdi (optional) If the key is specific to a device, this must
  *            contain a pointer to the struct sr_dev_inst to be checked.
- *            Otherwise it must be NULL.
+ *            Otherwise it must be NULL. If sdi is != NULL, sdi->priv must
+ *            also be != NULL.
  * @param[in] cg The channel group on the device for which to list the
  *                    values, or NULL.
  * @param[in] key The configuration key (SR_CONF_*).
@@ -666,6 +712,11 @@ SR_API int sr_config_get(const struct sr_dev_driver *driver,
 	if (check_key(driver, sdi, cg, key, SR_CONF_GET, NULL) != SR_OK)
 		return SR_ERR_ARG;
 
+	if (sdi && !sdi->priv) {
+		sr_err("Can't get config (sdi != NULL, sdi->priv == NULL).");
+		return SR_ERR;
+	}
+
 	if ((ret = driver->config_get(key, data, sdi, cg)) == SR_OK) {
 		log_key(sdi, cg, key, SR_CONF_GET, *data);
 		/* Got a floating reference from the driver. Sink it here,
@@ -679,7 +730,8 @@ SR_API int sr_config_get(const struct sr_dev_driver *driver,
 /**
  * Set value of a configuration key in a device instance.
  *
- * @param[in] sdi The device instance.
+ * @param[in] sdi The device instance. Must not be NULL. sdi->driver and
+ *                sdi->priv must not be NULL either.
  * @param[in] cg The channel group on the device for which to list the
  *                    values, or NULL.
  * @param[in] key The configuration key (SR_CONF_*).
@@ -703,7 +755,7 @@ SR_API int sr_config_set(const struct sr_dev_inst *sdi,
 
 	g_variant_ref_sink(data);
 
-	if (!sdi || !sdi->driver || !data)
+	if (!sdi || !sdi->driver || !sdi->priv || !data)
 		ret = SR_ERR;
 	else if (!sdi->driver->config_set)
 		ret = SR_ERR_ARG;
@@ -745,9 +797,11 @@ SR_API int sr_config_commit(const struct sr_dev_inst *sdi)
 /**
  * List all possible values for a configuration key.
  *
- * @param[in] driver The sr_dev_driver struct to query.
+ * @param[in] driver The sr_dev_driver struct to query. Must not be NULL.
  * @param[in] sdi (optional) If the key is specific to a device, this must
  *            contain a pointer to the struct sr_dev_inst to be checked.
+ *            Otherwise it must be NULL. If sdi is != NULL, sdi->priv must
+ *            also be != NULL.
  * @param[in] cg The channel group on the device for which to list the
  *                    values, or NULL.
  * @param[in] key The configuration key (SR_CONF_*).
@@ -779,6 +833,10 @@ SR_API int sr_config_list(const struct sr_dev_driver *driver,
 	else if (key != SR_CONF_SCAN_OPTIONS && key != SR_CONF_DEVICE_OPTIONS) {
 		if (check_key(driver, sdi, cg, key, SR_CONF_LIST, NULL) != SR_OK)
 			return SR_ERR_ARG;
+	}
+	if (sdi && !sdi->priv) {
+		sr_err("Can't list config (sdi != NULL, sdi->priv == NULL).");
+		return SR_ERR;
 	}
 	if ((ret = driver->config_list(key, data, sdi, cg)) == SR_OK) {
 		log_key(sdi, cg, key, SR_CONF_LIST, *data);

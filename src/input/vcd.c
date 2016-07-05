@@ -67,8 +67,7 @@
 
 #define LOG_PREFIX "input/vcd"
 
-#define DEFAULT_NUM_CHANNELS 8
-#define CHUNKSIZE 1024
+#define CHUNKSIZE (1024 * 1024)
 
 struct context {
 	gboolean started;
@@ -81,6 +80,10 @@ struct context {
 	int64_t skip;
 	gboolean skip_until_end;
 	GSList *channels;
+	size_t bytes_per_sample;
+	size_t samples_in_buffer;
+	uint8_t *buffer;
+	uint8_t *current_levels;
 };
 
 struct vcd_channel {
@@ -101,6 +104,10 @@ static gboolean parse_section(GString *buf, gchar **name, gchar **contents)
 	*name = *contents = NULL;
 	status = FALSE;
 	pos = 0;
+
+	/* Skip UTF8 BOM */
+	if (buf->len >= 3 && !strncmp(buf->str, "\xef\xbb\xbf", 3))
+		pos = 3;
 
 	/* Skip any initial white-space. */
 	while (pos < buf->len && g_ascii_isspace(buf->str[pos]))
@@ -202,37 +209,55 @@ static gboolean parse_header(const struct sr_input *in, GString *buf)
 				sr_err("Parsing timescale failed.");
 			}
 		} else if (g_strcmp0(name, "var") == 0) {
-			/* Format: $var type size identifier reference $end */
+			/* Format: $var type size identifier reference [opt. index] $end */
+			unsigned int length;
+
 			parts = g_strsplit_set(contents, " \r\n\t", 0);
 			remove_empty_parts(parts);
+			length = g_strv_length(parts);
 
-			if (g_strv_length(parts) != 4)
-				sr_warn("$var section should have 4 items");
+			if (length != 4 && length != 5)
+				sr_warn("$var section should have 4 or 5 items");
 			else if (g_strcmp0(parts[0], "reg") != 0 && g_strcmp0(parts[0], "wire") != 0)
 				sr_info("Unsupported signal type: '%s'", parts[0]);
 			else if (strtol(parts[1], NULL, 10) != 1)
 				sr_info("Unsupported signal size: '%s'", parts[1]);
-			else if (inc->channelcount >= inc->maxchannels)
-				sr_warn("Skipping '%s' because only %d channels requested.",
-						parts[3], inc->maxchannels);
+			else if (inc->maxchannels && inc->channelcount >= inc->maxchannels)
+				sr_warn("Skipping '%s%s' because only %d channels requested.",
+					parts[3], parts[4] ? : "", inc->maxchannels);
 			else {
-				sr_info("Channel %d is '%s' identified by '%s'.",
-						inc->channelcount, parts[3], parts[2]);
 				vcd_ch = g_malloc(sizeof(struct vcd_channel));
 				vcd_ch->identifier = g_strdup(parts[2]);
-				vcd_ch->name = g_strdup(parts[3]);
+				if (length == 4)
+					vcd_ch->name = g_strdup(parts[3]);
+				else
+					vcd_ch->name = g_strconcat(parts[3], parts[4], NULL);
+
+				sr_info("Channel %d is '%s' identified by '%s'.",
+						inc->channelcount, vcd_ch->name, vcd_ch->identifier);
+
+				sr_channel_new(in->sdi, inc->channelcount++, SR_CHANNEL_LOGIC, TRUE, vcd_ch->name);
 				inc->channels = g_slist_append(inc->channels, vcd_ch);
-				inc->channelcount++;
 			}
 
 			g_strfreev(parts);
 		}
 
-		g_free(name); name = NULL;
-		g_free(contents); contents = NULL;
+		g_free(name);
+		name = NULL;
+		g_free(contents);
+		contents = NULL;
 	}
 	g_free(name);
 	g_free(contents);
+
+	/*
+	 * Compute how many bytes each sample will have and initialize the
+	 * current levels. The current levels will be updated whenever VCD
+	 * has changes.
+	 */
+	inc->bytes_per_sample = (inc->channelcount + 7) / 8;
+	inc->current_levels = g_malloc0(inc->bytes_per_sample);
 
 	inc->got_header = status;
 
@@ -260,49 +285,94 @@ static int format_match(GHashTable *metadata)
 	return status ? SR_OK : SR_ERR;
 }
 
-/* Send N samples of the given value. */
-static void send_samples(const struct sr_dev_inst *sdi, uint64_t sample, uint64_t count)
+/* Send all accumulated bytes from inc->buffer. */
+static void send_buffer(const struct sr_input *in)
 {
+	struct context *inc;
 	struct sr_datafeed_packet packet;
 	struct sr_datafeed_logic logic;
-	uint64_t buffer[CHUNKSIZE];
-	uint64_t i;
-	unsigned chunksize = CHUNKSIZE;
 
-	if (count < chunksize)
-		chunksize = count;
+	inc = in->priv;
 
-	for (i = 0; i < chunksize; i++)
-		buffer[i] = sample;
+	if (inc->samples_in_buffer == 0)
+		return;
 
 	packet.type = SR_DF_LOGIC;
 	packet.payload = &logic;
-	logic.unitsize = sizeof(uint64_t);
-	logic.data = buffer;
+	logic.unitsize = inc->bytes_per_sample;
+	logic.data = inc->buffer;
+	logic.length = inc->bytes_per_sample * inc->samples_in_buffer;
+	sr_session_send(in->sdi, &packet);
+	inc->samples_in_buffer = 0;
+}
+
+/*
+ * Add N copies of the current sample to buffer.
+ * When the buffer fills up, automatically send it.
+ */
+static void add_samples(const struct sr_input *in, size_t count)
+{
+	struct context *inc;
+	size_t samples_per_chunk;
+	size_t space_left, i;
+	uint8_t *p;
+
+	inc = in->priv;
+	samples_per_chunk = CHUNKSIZE / inc->bytes_per_sample;
 
 	while (count) {
-		if (count < chunksize)
-			chunksize = count;
+		space_left = samples_per_chunk - inc->samples_in_buffer;
 
-		logic.length = sizeof(uint64_t) * chunksize;
+		if (space_left > count)
+			space_left = count;
 
-		sr_session_send(sdi, &packet);
-		count -= chunksize;
+		p = inc->buffer + inc->samples_in_buffer * inc->bytes_per_sample;
+		for (i = 0; i < space_left; i++) {
+			memcpy(p, inc->current_levels, inc->bytes_per_sample);
+			p += inc->bytes_per_sample;
+			inc->samples_in_buffer++;
+			count--;
+		}
+
+		if (inc->samples_in_buffer == samples_per_chunk)
+			send_buffer(in);
 	}
+}
+
+/* Set the channel level depending on the identifier and parsed value. */
+static void process_bit(struct context *inc, char *identifier, unsigned int bit)
+{
+	GSList *l;
+	struct vcd_channel *vcd_ch;
+	unsigned int j;
+
+	for (j = 0, l = inc->channels; j < inc->channelcount && l; j++, l = l->next) {
+		vcd_ch = l->data;
+		if (g_strcmp0(identifier, vcd_ch->identifier) == 0) {
+			/* Found our channel. */
+			size_t byte_idx = (j / 8);
+			size_t bit_idx = j - 8 * byte_idx;
+			if (bit)
+				inc->current_levels[byte_idx] |= (uint8_t)1 << bit_idx;
+			else
+				inc->current_levels[byte_idx] &= ~((uint8_t)1 << bit_idx);
+			break;
+		}
+	}
+	if (j == inc->channelcount)
+		sr_dbg("Did not find channel for identifier '%s'.", identifier);
 }
 
 /* Parse a set of lines from the data section. */
 static void parse_contents(const struct sr_input *in, char *data)
 {
 	struct context *inc;
-	struct vcd_channel *vcd_ch;
-	GSList *l;
-	uint64_t timestamp, prev_timestamp, prev_values;
-	unsigned int bit, i, j;
+	uint64_t timestamp, prev_timestamp;
+	unsigned int bit, i;
 	char **tokens;
 
 	inc = in->priv;
-	prev_timestamp = prev_values = 0;
+	prev_timestamp = 0;
 
 	/* Read one space-delimited token at a time. */
 	tokens = g_strsplit_set(data, " \t\r\n", 0);
@@ -343,7 +413,7 @@ static void parse_contents(const struct sr_input *in, char *data)
 				sr_dbg("New timestamp: %" PRIu64, timestamp);
 
 				/* Generate samples from prev_timestamp up to timestamp - 1. */
-				send_samples(in->sdi, prev_values, timestamp - prev_timestamp);
+				add_samples(in, timestamp - prev_timestamp);
 				prev_timestamp = timestamp;
 			}
 		} else if (tokens[i][0] == '$' && tokens[i][1] != '\0') {
@@ -361,10 +431,31 @@ static void parse_contents(const struct sr_input *in, char *data)
 				inc->skip_until_end = TRUE;
 				break;
 			}
-		} else if (strchr("bBrR", tokens[i][0]) != NULL) {
-			/* A vector value, not supported yet. */
-			break;
+		} else if (strchr("rR", tokens[i][0]) != NULL) {
+			sr_dbg("Real type vector values not supported yet!");
+			if (!tokens[++i])
+				/* No tokens left, bail out */
+				break;
+			else
+				/* Process next token */
+				continue;
+		} else if (strchr("bB", tokens[i][0]) != NULL) {
+			bit = (tokens[i][1] == '1');
+
+			/*
+			 * Bail out if a) char after 'b' is NUL, or b) there is
+			 * a second character after 'b', or c) there is no
+			 * identifier.
+			 */
+			if (!tokens[i][1] || tokens[i][2] || !tokens[++i]) {
+				sr_dbg("Unexpected vector format!");
+				break;
+			}
+
+			process_bit(inc, tokens[i], bit);
 		} else if (strchr("01xXzZ", tokens[i][0]) != NULL) {
+			char *identifier;
+
 			/* A new 1-bit sample value */
 			bit = (tokens[i][0] == '1');
 
@@ -373,28 +464,15 @@ static void parse_contents(const struct sr_input *in, char *data)
 			 * there was whitespace after the bit, the next token.
 			 */
 			if (tokens[i][1] == '\0') {
-				if (!tokens[++i])
-					/* Missing identifier */
-					continue;
-			} else {
-				for (j = 1; tokens[i][j]; j++)
-					tokens[i][j - 1] = tokens[i][j];
-				tokens[i][j - 1] = '\0';
-			}
-
-			for (j = 0, l = inc->channels; j < inc->channelcount && l; j++, l = l->next) {
-				vcd_ch = l->data;
-				if (g_strcmp0(tokens[i], vcd_ch->identifier) == 0) {
-					/* Found our channel */
-					if (bit)
-						prev_values |= (uint64_t)1 << j;
-					else
-						prev_values &= ~((uint64_t)1 << j);
+				if (!tokens[++i]) {
+					sr_dbg("Identifier missing!");
 					break;
 				}
+				identifier = tokens[i];
+			} else {
+				identifier = tokens[i] + 1;
 			}
-			if (j == inc->channelcount)
-				sr_dbg("Did not find channel for identifier '%s'.", tokens[i]);
+			process_bit(inc, identifier, bit);
 		} else {
 			sr_warn("Skipping unknown token '%s'.", tokens[i]);
 		}
@@ -404,22 +482,11 @@ static void parse_contents(const struct sr_input *in, char *data)
 
 static int init(struct sr_input *in, GHashTable *options)
 {
-	int num_channels, i;
-	char name[16];
 	struct context *inc;
 
-	num_channels = g_variant_get_int32(g_hash_table_lookup(options, "numchannels"));
-	if (num_channels < 1) {
-		sr_err("Invalid value for numchannels: must be at least 1.");
-		return SR_ERR_ARG;
-	}
-	if (num_channels > 64) {
-		sr_err("No more than 64 channels supported.");
-		return SR_ERR_ARG;
-	}
 	inc = in->priv = g_malloc0(sizeof(struct context));
-	inc->maxchannels = num_channels;
 
+	inc->maxchannels = g_variant_get_int32(g_hash_table_lookup(options, "numchannels"));
 	inc->downsample = g_variant_get_int32(g_hash_table_lookup(options, "downsample"));
 	if (inc->downsample < 1)
 		inc->downsample = 1;
@@ -431,10 +498,7 @@ static int init(struct sr_input *in, GHashTable *options)
 	in->sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	in->priv = inc;
 
-	for (i = 0; i < num_channels; i++) {
-		snprintf(name, 16, "%d", i);
-		sr_channel_new(in->sdi, i, SR_CHANNEL_LOGIC, TRUE, name);
-	}
+	inc->buffer = g_malloc(CHUNKSIZE);
 
 	return SR_OK;
 }
@@ -466,7 +530,7 @@ static int process_buffer(struct sr_input *in)
 
 	inc = in->priv;
 	if (!inc->started) {
-		std_session_send_df_header(in->sdi, LOG_PREFIX);
+		std_session_send_df_header(in->sdi);
 
 		packet.type = SR_DF_META;
 		packet.payload = &meta;
@@ -474,6 +538,7 @@ static int process_buffer(struct sr_input *in)
 		src = sr_config_new(SR_CONF_SAMPLERATE, g_variant_new_uint64(samplerate));
 		meta.config = g_slist_append(NULL, src);
 		sr_session_send(in->sdi, &packet);
+		g_slist_free(meta.config);
 		sr_config_free(src);
 
 		inc->started = TRUE;
@@ -517,20 +582,21 @@ static int receive(struct sr_input *in, GString *buf)
 
 static int end(struct sr_input *in)
 {
-	struct sr_datafeed_packet packet;
 	struct context *inc;
 	int ret;
+
+	inc = in->priv;
 
 	if (in->sdi_ready)
 		ret = process_buffer(in);
 	else
 		ret = SR_OK;
 
-	inc = in->priv;
-	if (inc->started) {
-		packet.type = SR_DF_END;
-		sr_session_send(in->sdi, &packet);
-	}
+	/* Send any samples that haven't been sent yet. */
+	send_buffer(in);
+
+	if (inc->started)
+		std_session_send_df_end(in->sdi);
 
 	return ret;
 }
@@ -541,6 +607,21 @@ static void cleanup(struct sr_input *in)
 
 	inc = in->priv;
 	g_slist_free_full(inc->channels, free_channel);
+	g_free(inc->buffer);
+	inc->buffer = NULL;
+	g_free(inc->current_levels);
+	inc->current_levels = NULL;
+}
+
+static int reset(struct sr_input *in)
+{
+	struct context *inc = in->priv;
+
+	cleanup(in);
+	inc->started = FALSE;
+	g_string_truncate(in->buf, 0);
+
+	return SR_OK;
 }
 
 static struct sr_option options[] = {
@@ -554,7 +635,7 @@ static struct sr_option options[] = {
 static const struct sr_option *get_options(void)
 {
 	if (!options[0].def) {
-		options[0].def = g_variant_ref_sink(g_variant_new_int32(DEFAULT_NUM_CHANNELS));
+		options[0].def = g_variant_ref_sink(g_variant_new_int32(0));
 		options[1].def = g_variant_ref_sink(g_variant_new_int32(-1));
 		options[2].def = g_variant_ref_sink(g_variant_new_int32(1));
 		options[3].def = g_variant_ref_sink(g_variant_new_int32(0));
@@ -575,4 +656,5 @@ SR_PRIV struct sr_input_module input_vcd = {
 	.receive = receive,
 	.end = end,
 	.cleanup = cleanup,
+	.reset = reset,
 };

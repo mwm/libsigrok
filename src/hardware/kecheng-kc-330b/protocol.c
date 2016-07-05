@@ -20,8 +20,6 @@
 #include <config.h>
 #include <string.h>
 #include "protocol.h"
-
-extern struct sr_dev_driver kecheng_kc_330b_driver_info;
 extern const uint64_t kecheng_kc_330b_sample_intervals[][2];
 
 SR_PRIV int kecheng_kc_330b_handle_events(int fd, int revents, void *cb_data)
@@ -29,7 +27,6 @@ SR_PRIV int kecheng_kc_330b_handle_events(int fd, int revents, void *cb_data)
 	struct sr_dev_driver *di;
 	struct drv_context *drvc;
 	struct dev_context *devc;
-	struct sr_datafeed_packet packet;
 	struct sr_dev_inst *sdi;
 	struct sr_usb_dev_inst *usb;
 	struct timeval tv;
@@ -54,8 +51,7 @@ SR_PRIV int kecheng_kc_330b_handle_events(int fd, int revents, void *cb_data)
 	if (sdi->status == SR_ST_STOPPING) {
 		libusb_free_transfer(devc->xfer);
 		usb_source_remove(sdi->session, drvc->sr_ctx);
-		packet.type = SR_DF_END;
-		sr_session_send(cb_data, &packet);
+		std_session_send_df_end(sdi);
 		sdi->status = SR_ST_ACTIVE;
 		return TRUE;
 	}
@@ -71,8 +67,7 @@ SR_PRIV int kecheng_kc_330b_handle_events(int fd, int revents, void *cb_data)
 			if (ret != 0 || len != 1) {
 				sr_dbg("Failed to request new acquisition: %s",
 						libusb_error_name(ret));
-				sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-						devc->cb_data);
+				sdi->driver->dev_acquisition_stop(sdi);
 				return TRUE;
 			}
 			libusb_submit_transfer(devc->xfer);
@@ -93,8 +88,7 @@ SR_PRIV int kecheng_kc_330b_handle_events(int fd, int revents, void *cb_data)
 		if (ret != 0 || len != 4) {
 			sr_dbg("Failed to request next chunk: %s",
 					libusb_error_name(ret));
-			sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-					devc->cb_data);
+			sdi->driver->dev_acquisition_stop(sdi);
 			return TRUE;
 		}
 		libusb_submit_transfer(devc->xfer);
@@ -108,21 +102,23 @@ static void send_data(const struct sr_dev_inst *sdi, void *buf, unsigned int buf
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 
 	devc = sdi->priv;
 
-	memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-	analog.mq = SR_MQ_SOUND_PRESSURE_LEVEL;
-	analog.mqflags = devc->mqflags;
-	analog.unit = SR_UNIT_DECIBEL_SPL;
-	analog.channels = sdi->channels;
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	analog.meaning->mq = SR_MQ_SOUND_PRESSURE_LEVEL;
+	analog.meaning->mqflags = devc->mqflags;
+	analog.meaning->unit = SR_UNIT_DECIBEL_SPL;
+	analog.meaning->channels = sdi->channels;
 	analog.num_samples = buf_len;
 	analog.data = buf;
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	sr_session_send(devc->cb_data, &packet);
-
+	sr_session_send(sdi, &packet);
 }
 
 SR_PRIV void LIBUSB_CALL kecheng_kc_330b_receive_transfer(struct libusb_transfer *transfer)
@@ -139,8 +135,7 @@ SR_PRIV void LIBUSB_CALL kecheng_kc_330b_receive_transfer(struct libusb_transfer
 	switch (transfer->status) {
 	case LIBUSB_TRANSFER_NO_DEVICE:
 		/* USB device was unplugged. */
-		sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-				devc->cb_data);
+		sdi->driver->dev_acquisition_stop(sdi);
 		return;
 	case LIBUSB_TRANSFER_COMPLETED:
 	case LIBUSB_TRANSFER_TIMED_OUT: /* We may have received some data though */
@@ -161,8 +156,7 @@ SR_PRIV void LIBUSB_CALL kecheng_kc_330b_receive_transfer(struct libusb_transfer
 			send_data(sdi, fvalue, 1);
 			devc->num_samples++;
 			if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-				sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-						devc->cb_data);
+				sdi->driver->dev_acquisition_stop(sdi);
 			} else {
 				/* let USB event handler fire off another
 				 * request when the time is right. */
@@ -182,8 +176,7 @@ SR_PRIV void LIBUSB_CALL kecheng_kc_330b_receive_transfer(struct libusb_transfer
 			send_data(sdi, fvalue, 1);
 			devc->num_samples += num_samples;
 			if (devc->num_samples >= devc->stored_samples) {
-				sdi->driver->dev_acquisition_stop((struct sr_dev_inst *)sdi,
-						devc->cb_data);
+				sdi->driver->dev_acquisition_stop(sdi);
 			} else {
 				/* let USB event handler fire off another
 				 * request when the time is right. */

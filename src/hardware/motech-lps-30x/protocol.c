@@ -33,33 +33,39 @@ static void send_data(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	int i;
 	float data[MAX_CHANNELS];
 
 	devc = sdi->priv;
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	analog.channels = sdi->channels;
+
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+
+	analog.meaning->channels = sdi->channels;
 	analog.num_samples = 1;
-
-	analog.mq = SR_MQ_VOLTAGE;
-	analog.unit = SR_UNIT_VOLT;
-	analog.mqflags = SR_MQFLAG_DC;
+	analog.meaning->mq = SR_MQ_VOLTAGE;
+	analog.meaning->unit = SR_UNIT_VOLT;
+	analog.meaning->mqflags = SR_MQFLAG_DC;
 	analog.data = data;
+
 	for (i = 0; i < devc->model->num_channels; i++)
-		analog.data[i] = devc->channel_status[i].output_voltage_last; /* Value always 3.3 or 5 for channel 3, if present! */
+		((float *)analog.data)[i] = devc->channel_status[i].output_voltage_last; /* Value always 3.3 or 5 for channel 3, if present! */
 	sr_session_send(sdi, &packet);
 
-	analog.mq = SR_MQ_CURRENT;
-	analog.unit = SR_UNIT_AMPERE;
-	analog.mqflags = 0;
+	analog.meaning->mq = SR_MQ_CURRENT;
+	analog.meaning->unit = SR_UNIT_AMPERE;
+	analog.meaning->mqflags = 0;
 	analog.data = data;
 	for (i = 0; i < devc->model->num_channels; i++)
-		analog.data[i] = devc->channel_status[i].output_current_last; /* Value always 0 for channel 3, if present! */
+		((float *)analog.data)[i] = devc->channel_status[i].output_current_last; /* Value always 0 for channel 3, if present! */
 	sr_session_send(sdi, &packet);
 
-	devc->num_samples++;
+	sr_sw_limits_update_samples_read(&devc->limits, 1);
 }
 
 /** Process a complete line (without CR/LF) in buf. */
@@ -140,7 +146,6 @@ SR_PRIV int motech_lps_30x_receive_data(int fd, int revents, void *cb_data)
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
 	int len;
-	gdouble elapsed_s;
 
 	(void)fd;
 
@@ -179,15 +184,8 @@ SR_PRIV int motech_lps_30x_receive_data(int fd, int revents, void *cb_data)
 		}
 	}
 
-	/* If number of samples or time limit reached, stop acquisition. */
-	if (devc->limit_samples && (devc->num_samples >= devc->limit_samples))
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-
-	if (devc->limit_msec) {
-		elapsed_s = g_timer_elapsed(devc->elapsed_msec, NULL);
-		if ((elapsed_s * 1000) >= devc->limit_msec)
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-	}
+	if (sr_sw_limits_check(&devc->limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	/* Only request the next packet if required. */
 	if (!((sdi->status == SR_ST_ACTIVE) && (devc->acq_running)))

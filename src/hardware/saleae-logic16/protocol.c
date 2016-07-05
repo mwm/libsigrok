@@ -35,11 +35,7 @@
 #define FPGA_FIRMWARE_33	"saleae-logic16-fpga-33.bitstream"
 
 #define MAX_SAMPLE_RATE		SR_MHZ(100)
-#define MAX_4CH_SAMPLE_RATE	SR_MHZ(50)
-#define MAX_7CH_SAMPLE_RATE	SR_MHZ(40)
-#define MAX_8CH_SAMPLE_RATE	SR_MHZ(32)
-#define MAX_10CH_SAMPLE_RATE	SR_MHZ(25)
-#define MAX_13CH_SAMPLE_RATE	SR_MHZ(16)
+#define MAX_SAMPLE_RATE_X_CH	SR_MHZ(300)
 
 #define BASE_CLOCK_0_FREQ	SR_MHZ(100)
 #define BASE_CLOCK_1_FREQ	SR_MHZ(160)
@@ -596,11 +592,7 @@ SR_PRIV int logic16_setup_acquisition(const struct sr_dev_inst *sdi,
 		if (channels & (1U << i))
 			nchan++;
 
-	if ((nchan >= 13 && samplerate > MAX_13CH_SAMPLE_RATE) ||
-	    (nchan >= 10 && samplerate > MAX_10CH_SAMPLE_RATE) ||
-	    (nchan >= 8  && samplerate > MAX_8CH_SAMPLE_RATE) ||
-	    (nchan >= 7  && samplerate > MAX_7CH_SAMPLE_RATE) ||
-	    (nchan >= 4  && samplerate > MAX_4CH_SAMPLE_RATE)) {
+	if (nchan * samplerate > MAX_SAMPLE_RATE_X_CH) {
 		sr_err("Unable to sample at %" PRIu64 "Hz "
 		       "with this many channels.", samplerate);
 		return SR_ERR;
@@ -757,16 +749,12 @@ SR_PRIV int logic16_init_device(const struct sr_dev_inst *sdi)
 
 static void finish_acquisition(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
 	struct dev_context *devc;
 
 	devc = sdi->priv;
 
-	/* Terminate session. */
-	packet.type = SR_DF_END;
-	sr_session_send(devc->cb_data, &packet);
+	std_session_send_df_end(sdi);
 
-	/* Remove fds from polling. */
 	usb_source_remove(sdi->session, devc->ctx);
 
 	devc->num_transfers = 0;
@@ -936,7 +924,7 @@ SR_PRIV void LIBUSB_CALL logic16_receive_transfer(struct libusb_transfer *transf
 			logic.length = new_samples * 2;
 			logic.unitsize = 2;
 			logic.data = devc->convbuffer;
-			sr_session_send(devc->cb_data, &packet);
+			sr_session_send(sdi, &packet);
 			devc->sent_samples += new_samples;
 		} else {
 			trigger_offset = soft_trigger_logic_check(devc->stl,
@@ -952,7 +940,7 @@ SR_PRIV void LIBUSB_CALL logic16_receive_transfer(struct libusb_transfer *transf
 				logic.length = num_samples * 2;
 				logic.unitsize = 2;
 				logic.data = devc->convbuffer + trigger_offset * 2;
-				sr_session_send(devc->cb_data, &packet);
+				sr_session_send(sdi, &packet);
 				devc->sent_samples += num_samples;
 
 				devc->trigger_fired = TRUE;

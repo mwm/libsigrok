@@ -73,7 +73,7 @@ struct dev_context {
 	int sample_interval;
 	int alarm_low;
 	int alarm_high;
-	uint64_t mqflags;
+	enum sr_mqflag mqflags;
 	int data_source;
 
 	/* Operational state */
@@ -81,7 +81,6 @@ struct dev_context {
 	gboolean config_dirty;
 	uint64_t num_samples;
 	uint64_t stored_samples;
-	void *cb_data;
 	struct libusb_transfer *xfer;
 	unsigned char buf[128];
 

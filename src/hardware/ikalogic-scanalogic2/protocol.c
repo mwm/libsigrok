@@ -20,23 +20,15 @@
 #include <config.h>
 #include "protocol.h"
 
-extern struct sr_dev_driver ikalogic_scanalogic2_driver_info;
-
 extern uint64_t sl2_samplerates[NUM_SAMPLERATES];
 
 static void stop_acquisition(struct sr_dev_inst *sdi)
 {
 	struct drv_context *drvc = sdi->driver->context;
-	struct dev_context *devc;
-	struct sr_datafeed_packet packet;
 
-	devc = sdi->priv;
-
-	/* Remove USB file descriptors from polling. */
 	usb_source_remove(sdi->session, drvc->sr_ctx);
 
-	packet.type = SR_DF_END;
-	sr_session_send(devc->cb_data, &packet);
+	std_session_send_df_end(sdi);
 
 	sdi->status = SR_ST_ACTIVE;
 }
@@ -44,16 +36,10 @@ static void stop_acquisition(struct sr_dev_inst *sdi)
 static void abort_acquisition(struct sr_dev_inst *sdi)
 {
 	struct drv_context *drvc = sdi->driver->context;
-	struct dev_context *devc;
-	struct sr_datafeed_packet packet;
 
-	devc = sdi->priv;
-
-	/* Remove USB file descriptors from polling. */
 	usb_source_remove(sdi->session, drvc->sr_ctx);
 
-	packet.type = SR_DF_END;
-	sr_session_send(devc->cb_data, &packet);
+	std_session_send_df_end(sdi);
 
 	sdi->driver->dev_close(sdi);
 }
@@ -138,7 +124,7 @@ static void process_sample_data(const struct sr_dev_inst *sdi)
 			if (devc->trigger_type != TRIGGER_TYPE_NONE &&
 					devc->pre_trigger_samples == 0) {
 				packet.type = SR_DF_TRIGGER;
-				sr_session_send(devc->cb_data, &packet);
+				sr_session_send(sdi, &packet);
 			}
 		}
 
@@ -176,10 +162,10 @@ static void process_sample_data(const struct sr_dev_inst *sdi)
 				logic.length = n;
 				logic.unitsize = 1;
 				logic.data = buffer;
-				sr_session_send(devc->cb_data, &packet);
+				sr_session_send(sdi, &packet);
 
 				packet.type = SR_DF_TRIGGER;
-				sr_session_send(devc->cb_data, &packet);
+				sr_session_send(sdi, &packet);
 
 				n = 0;
 			}
@@ -192,7 +178,7 @@ static void process_sample_data(const struct sr_dev_inst *sdi)
 		logic.length = n;
 		logic.unitsize = 1;
 		logic.data = buffer;
-		sr_session_send(devc->cb_data, &packet);
+		sr_session_send(sdi, &packet);
 	}
 }
 
@@ -270,7 +256,8 @@ SR_PRIV void LIBUSB_CALL sl2_receive_transfer_in( struct libusb_transfer *transf
 	devc = sdi->priv;
 
 	if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
-		sr_err("Transfer to device failed: %i.", transfer->status);
+		sr_err("Transfer to device failed: %s.",
+			libusb_error_name(transfer->status));
 		devc->transfer_error = TRUE;
 		return;
 	}
@@ -400,7 +387,8 @@ SR_PRIV void LIBUSB_CALL sl2_receive_transfer_out( struct libusb_transfer *trans
 	devc = sdi->priv;
 
 	if (transfer->status != LIBUSB_TRANSFER_COMPLETED) {
-		sr_err("Transfer to device failed: %i.", transfer->status);
+		sr_err("Transfer to device failed: %s.",
+			libusb_error_name(transfer->status));
 		devc->transfer_error = TRUE;
 		return;
 	}
@@ -637,14 +625,14 @@ SR_PRIV void sl2_calculate_trigger_samples(const struct sr_dev_inst *sdi)
 	devc->post_trigger_bytes = post_trigger_bytes;
 }
 
-SR_PRIV int sl2_get_device_info(struct sr_usb_dev_inst usb,
-		struct device_info *dev_info)
+SR_PRIV int sl2_get_device_info(struct sr_dev_driver *di,
+		struct sr_usb_dev_inst usb, struct device_info *dev_info)
 {
 	struct drv_context *drvc;
 	uint8_t buffer[PACKET_LENGTH];
 	int ret;
 
-	drvc = ikalogic_scanalogic2_driver_info.context;
+	drvc = di->context;
 
 	if (!dev_info)
 		return SR_ERR_ARG;

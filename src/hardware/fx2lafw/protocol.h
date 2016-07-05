@@ -39,6 +39,8 @@
 #define NUM_SIMUL_TRANSFERS	32
 #define MAX_EMPTY_TRANSFERS	(NUM_SIMUL_TRANSFERS * 2)
 
+#define NUM_CHANNELS		16
+
 #define FX2LAFW_REQUIRED_VERSION_MAJOR	1
 
 #define MAX_8BIT_SAMPLE_RATE	SR_MHZ(24)
@@ -48,10 +50,13 @@
 #define MAX_SAMPLE_DELAY	(6 * 256)
 
 #define DEV_CAPS_16BIT_POS	0
+#define DEV_CAPS_AX_ANALOG_POS	1
 
 #define DEV_CAPS_16BIT		(1 << DEV_CAPS_16BIT_POS)
+#define DEV_CAPS_AX_ANALOG	(1 << DEV_CAPS_AX_ANALOG_POS)
 
-#define DSLOGIC_FPGA_FIRMWARE "dreamsourcelab-dslogic-fpga.fw"
+#define DSLOGIC_FPGA_FIRMWARE_5V "dreamsourcelab-dslogic-fpga-5v.fw"
+#define DSLOGIC_FPGA_FIRMWARE_3V3 "dreamsourcelab-dslogic-fpga-3v3.fw"
 #define DSCOPE_FPGA_FIRMWARE "dreamsourcelab-dscope-fpga.fw"
 #define DSLOGIC_PRO_FPGA_FIRMWARE "dreamsourcelab-dslogic-pro-fpga.fw"
 
@@ -60,9 +65,11 @@
 #define CMD_START			0xb1
 #define CMD_GET_REVID_VERSION		0xb2
 
+#define CMD_START_FLAGS_CLK_CTL2_POS	4
 #define CMD_START_FLAGS_WIDE_POS	5
 #define CMD_START_FLAGS_CLK_SRC_POS	6
 
+#define CMD_START_FLAGS_CLK_CTL2	(1 << CMD_START_FLAGS_CLK_CTL2_POS)
 #define CMD_START_FLAGS_SAMPLE_8BIT	(0 << CMD_START_FLAGS_WIDE_POS)
 #define CMD_START_FLAGS_SAMPLE_16BIT	(1 << CMD_START_FLAGS_WIDE_POS)
 
@@ -87,6 +94,8 @@ struct fx2lafw_profile {
 
 struct dev_context {
 	const struct fx2lafw_profile *profile;
+	GSList *enabled_analog_channels;
+	gboolean ch_enabled[NUM_CHANNELS];
 	/*
 	 * Since we can't keep track of an fx2lafw device after upgrading
 	 * the firmware (it renumerates into a different device address
@@ -114,15 +123,22 @@ struct dev_context {
 	int submitted_transfers;
 	int empty_transfer_count;
 
-	void *cb_data;
 	unsigned int num_transfers;
 	struct libusb_transfer **transfers;
 	struct sr_context *ctx;
+	void (*send_data_proc)(struct sr_dev_inst *sdi,
+		uint8_t *data, size_t length, size_t sample_width);
+	uint8_t *logic_buffer;
+	float *analog_buffer;
 
 	/* Is this a DSLogic? */
 	gboolean dslogic;
 	uint16_t dslogic_mode;
-	int dslogic_external_clock;
+	uint32_t trigger_pos;
+	gboolean dslogic_external_clock;
+	gboolean dslogic_continuous_mode;
+	int dslogic_clock_edge;
+	int dslogic_voltage_threshold;
 };
 
 SR_PRIV int fx2lafw_command_start_acquisition(const struct sr_dev_inst *sdi);
@@ -135,5 +151,9 @@ SR_PRIV void LIBUSB_CALL fx2lafw_receive_transfer(struct libusb_transfer *transf
 SR_PRIV size_t fx2lafw_get_buffer_size(struct dev_context *devc);
 SR_PRIV unsigned int fx2lafw_get_number_of_transfers(struct dev_context *devc);
 SR_PRIV unsigned int fx2lafw_get_timeout(struct dev_context *devc);
+SR_PRIV void la_send_data_proc(struct sr_dev_inst *sdi, uint8_t *data,
+		size_t length, size_t sample_width);
+SR_PRIV void mso_send_data_proc(struct sr_dev_inst *sdi, uint8_t *data,
+		size_t length, size_t sample_width);
 
 #endif

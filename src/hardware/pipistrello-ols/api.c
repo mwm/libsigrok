@@ -75,17 +75,9 @@ static const uint64_t samplerates[] = {
 	SR_HZ(1),
 };
 
-SR_PRIV struct sr_dev_driver p_ols_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	GSList *devices;
 	int ret, i;
@@ -93,8 +85,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	int bytes_read;
 
 	(void)options;
-
-	drvc = di->context;
 
 	devices = NULL;
 
@@ -184,10 +174,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		sr_dbg("Failed to set default samplerate (%"PRIu64").",
 				DEFAULT_SAMPLERATE);
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 	devices = g_slist_append(devices, sdi);
 
-	return devices;
+	return std_scan_complete(di, devices);
 
 err_close_ftdic:
 	p_ols_close(devc);
@@ -198,11 +187,6 @@ err_free_ftdi_buf:
 	g_free(devc);
 
 	return NULL;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
 }
 
 static void clear_helper(void *priv)
@@ -218,11 +202,6 @@ static void clear_helper(void *priv)
 static int dev_clear(const struct sr_dev_driver *di)
 {
 	return std_dev_clear(di, clear_helper);
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
 }
 
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -535,8 +514,7 @@ static int disable_trigger(const struct sr_dev_inst *sdi, int stage)
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-		void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	uint32_t samplecount, readcount, delaycount;
@@ -689,20 +667,18 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	devc->cnt_bytes = devc->cnt_samples = devc->cnt_samples_rle = 0;
 	memset(devc->sample, 0, 4);
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Hook up a dummy handler to receive data from the device. */
 	sr_session_source_add(sdi->session, -1, 0, 10, p_ols_receive_data,
-			cb_data);
+				(struct sr_dev_inst *)sdi);
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-	struct sr_datafeed_packet packet;
 
 	devc = sdi->priv;
 
@@ -715,10 +691,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
 
 	sr_session_source_remove(sdi->session, -1);
 
-	/* Send end packet to the session bus. */
-	sr_dbg("Sending SR_DF_END.");
-	packet.type = SR_DF_END;
-	sr_session_send(cb_data, &packet);
+	std_session_send_df_end(sdi);
 
 	return SR_OK;
 }
@@ -727,10 +700,10 @@ SR_PRIV struct sr_dev_driver p_ols_driver_info = {
 	.name = "p-ols",
 	.longname = "Pipistrello OLS",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -741,3 +714,4 @@ SR_PRIV struct sr_dev_driver p_ols_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(p_ols_driver_info);

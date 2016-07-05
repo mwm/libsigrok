@@ -114,6 +114,7 @@ static struct unit_mq_string mq_strings[] = {
 	{ SR_MQFLAG_AVG, " AVG" },
 	{ SR_MQFLAG_REFERENCE, " REF" },
 	{ SR_MQFLAG_UNSTABLE, " UNSTABLE" },
+	{ SR_MQFLAG_FOUR_WIRE, " 4-WIRE" },
 	ALL_ZERO
 };
 
@@ -187,9 +188,80 @@ SR_API int sr_analog_to_float(const struct sr_datafeed_analog *analog,
 	bigendian = FALSE;
 #endif
 	if (!analog->encoding->is_float) {
-		/* TODO */
-		sr_err("Only floating-point encoding supported so far.");
-		return SR_ERR;
+		float offset = analog->encoding->offset.p / (float)analog->encoding->offset.q;
+		float scale = analog->encoding->scale.p / (float)analog->encoding->scale.q;
+		gboolean is_signed = analog->encoding->is_signed;
+		gboolean is_bigendian = analog->encoding->is_bigendian;
+		int8_t *data8 = (int8_t *)(analog->data);
+		int16_t *data16 = (int16_t *)(analog->data);
+		int32_t *data32 = (int32_t *)(analog->data);
+
+		switch (analog->encoding->unitsize) {
+		case 1:
+			if (is_signed) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * data8[i];
+					outbuf[i] += offset;
+				}
+			} else {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * R8(data8 + i);
+					outbuf[i] += offset;
+				}
+			}
+			break;
+		case 2:
+			if (is_signed && is_bigendian) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RB16S(&data16[i]);
+					outbuf[i] += offset;
+				}
+			} else if (is_bigendian) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RB16(&data16[i]);
+					outbuf[i] += offset;
+				}
+			} else if (is_signed) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RL16S(&data16[i]);
+					outbuf[i] += offset;
+				}
+			} else {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RL16(&data16[i]);
+					outbuf[i] += offset;
+				}
+			}
+			break;
+		case 4:
+			if (is_signed && is_bigendian) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RB32S(&data32[i]);
+					outbuf[i] += offset;
+				}
+			} else if (is_bigendian) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RB32(&data32[i]);
+					outbuf[i] += offset;
+				}
+			} else if (is_signed) {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RL32S(&data32[i]);
+					outbuf[i] += offset;
+				}
+			} else {
+				for (unsigned int i = 0; i < count; i++) {
+					outbuf[i] = scale * RL32(&data32[i]);
+					outbuf[i] += offset;
+				}
+			}
+			break;
+		default:
+			sr_err("Unsupported unit size '%d' for analog-to-float conversion.",
+				analog->encoding->unitsize);
+			return SR_ERR;
+		}
+		return SR_OK;
 	}
 
 	if (analog->encoding->unitsize == sizeof(float)
@@ -280,6 +352,201 @@ SR_API void sr_rational_set(struct sr_rational *r, int64_t p, uint64_t q)
 
 	r->p = p;
 	r->q = q;
+}
+
+#ifndef HAVE___INT128_T
+struct sr_int128_t {
+	int64_t high;
+	uint64_t low;
+};
+
+struct sr_uint128_t {
+	uint64_t high;
+	uint64_t low;
+};
+
+static void mult_int64(struct sr_int128_t *res, const int64_t a,
+	const int64_t b)
+{
+	uint64_t t1, t2, t3, t4;
+
+	t1 = (UINT32_MAX & a) * (UINT32_MAX & b);
+	t2 = (UINT32_MAX & a) * (b >> 32);
+	t3 = (a >> 32) * (UINT32_MAX & b);
+	t4 = (a >> 32) * (b >> 32);
+
+	res->low = t1 + (t2 << 32) + (t3 << 32);
+	res->high = (t1 >> 32) + (uint64_t)((uint32_t)(t2)) + (uint64_t)((uint32_t)(t3));
+	res->high >>= 32;
+	res->high += ((int64_t)t2 >> 32) + ((int64_t)t3 >> 32) + t4;
+}
+
+static void mult_uint64(struct sr_uint128_t *res, const uint64_t a,
+	const uint64_t b)
+{
+	uint64_t t1, t2, t3, t4;
+
+	// (x1 + x2) * (y1 + y2) = x1*y1 + x1*y2 + x2*y1 + x2*y2
+	t1 = (UINT32_MAX & a) * (UINT32_MAX & b);
+	t2 = (UINT32_MAX & a) * (b >> 32);
+	t3 = (a >> 32) * (UINT32_MAX & b);
+	t4 = (a >> 32) * (b >> 32);
+
+	res->low = t1 + (t2 << 32) + (t3 << 32);
+	res->high = (t1 >> 32) + (uint64_t)((uint32_t)(t2)) + (uint64_t)((uint32_t)(t3));
+	res->high >>= 32;
+	res->high += ((int64_t)t2 >> 32) + ((int64_t)t3 >> 32) + t4;
+}
+#endif
+
+/**
+ * Compare two sr_rational for equality
+ *
+ * @param[in] a First value
+ * @param[in] b Second value
+ *
+ * The values are compared for numerical equality, i.e. 2/10 == 1/5
+ *
+ * @retval 1 if both values are equal
+ * @retval 0 otherwise
+ *
+ * @since 0.5.0
+ */
+SR_API int sr_rational_eq(const struct sr_rational *a, const struct sr_rational *b)
+{
+#ifdef HAVE___INT128_T
+	__int128_t m1, m2;
+
+	/* p1/q1 = p2/q2  <=>  p1*q2 = p2*q1 */
+	m1 = ((__int128_t)(b->p)) * ((__uint128_t)a->q);
+	m2 = ((__int128_t)(a->p)) * ((__uint128_t)b->q);
+
+	return (m1 == m2);
+
+#else
+	struct sr_int128_t m1, m2;
+
+	mult_int64(&m1, a->q, b->p);
+	mult_int64(&m2, a->p, b->q);
+
+	return (m1.high == m2.high) && (m1.low == m2.low);
+#endif
+}
+
+/**
+ * Multiply two sr_rational
+ *
+ * @param[in] a First value
+ * @param[in] b Second value
+ * @param[out] res Result
+ *
+ * The resulting nominator/denominator are reduced if the result would not fit
+ * otherwise. If the resulting nominator/denominator are relatively prime,
+ * this may not be possible.
+ *
+ * It is save to use the same variable for result and input values
+ *
+ * @retval SR_OK Success.
+ * @retval SR_ERR_ARG Resulting value to large
+ *
+ * @since 0.5.0
+ */
+SR_API int sr_rational_mult(struct sr_rational *res, const struct sr_rational *a,
+	const struct sr_rational *b)
+{
+#ifdef HAVE___INT128_T
+	__int128_t p;
+	__uint128_t q;
+
+	p = (__int128_t)(a->p) * (__int128_t)(b->p);
+	q = (__uint128_t)(a->q) * (__uint128_t)(b->q);
+
+	if ((p > INT64_MAX) || (p < INT64_MIN) || (q > UINT64_MAX)) {
+		while (!((p & 1) || (q & 1))) {
+			p /= 2;
+			q /= 2;
+		}
+	}
+
+	if ((p > INT64_MAX) || (p < INT64_MIN) || (q > UINT64_MAX)) {
+		// TODO: determine gcd to do further reduction
+		return SR_ERR_ARG;
+	}
+
+	res->p = (int64_t)(p);
+	res->q = (uint64_t)(q);
+
+	return SR_OK;
+
+#else
+	struct sr_int128_t p;
+	struct sr_uint128_t q;
+
+	mult_int64(&p, a->p, b->p);
+	mult_uint64(&q, a->q, b->q);
+
+	while (!(p.low & 1) && !(q.low & 1)) {
+		p.low /= 2;
+		if (p.high & 1) p.low |= (1ll << 63);
+		p.high >>= 1;
+		q.low /= 2;
+		if (q.high & 1) q.low |= (1ll << 63);
+		q.high >>= 1;
+	}
+
+	if (q.high)
+		return SR_ERR_ARG;
+	if ((p.high >= 0) && (p.low > INT64_MAX))
+		return SR_ERR_ARG;
+	if (p.high < -1)
+		return SR_ERR_ARG;
+
+	res->p = (int64_t)p.low;
+	res->q = q.low;
+
+	return SR_OK;
+#endif
+}
+
+/**
+ * Divide rational a by rational b
+ *
+ * @param[in] num numerator
+ * @param[in] div divisor
+ * @param[out] res Result
+ *
+ * The resulting nominator/denominator are reduced if the result would not fit
+ * otherwise. If the resulting nominator/denominator are relatively prime,
+ * this may not be possible.
+ *
+ * It is save to use the same variable for result and input values
+ *
+ * @retval SR_OK Success.
+ * @retval SR_ERR_ARG Division by zero
+ * @retval SR_ERR_ARG Denominator of divisor to large
+ * @retval SR_ERR_ARG Resulting value to large
+ *
+ * @since 0.5.0
+ */
+SR_API int sr_rational_div(struct sr_rational *res, const struct sr_rational *num,
+	const struct sr_rational *div)
+{
+	struct sr_rational t;
+
+	if (div->q > INT64_MAX)
+		return SR_ERR_ARG;
+	if (div->p == 0)
+		return SR_ERR_ARG;
+
+	if (div->p > 0) {
+		t.p = div->q;
+		t.q = div->p;
+	} else {
+		t.p = -div->q;
+		t.q = -div->p;
+	}
+
+	return sr_rational_mult(res, num, &t);
 }
 
 /** @} */

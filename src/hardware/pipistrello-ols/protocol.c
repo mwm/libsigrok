@@ -20,8 +20,6 @@
 #include <config.h>
 #include "protocol.h"
 
-extern SR_PRIV struct sr_dev_driver p_ols_driver_info;
-
 SR_PRIV int write_shortcommand(struct dev_context *devc, uint8_t command)
 {
 	uint8_t buf[1];
@@ -227,7 +225,6 @@ SR_PRIV struct sr_dev_inst *p_ols_get_metadata(uint8_t *buf, int bytes_read, str
 
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
 	sdi->status = SR_ST_INACTIVE;
-	sdi->driver = &p_ols_driver_info;
 	sdi->priv = devc;
 
 	devname = g_string_new("");
@@ -427,7 +424,7 @@ SR_PRIV int p_ols_receive_data(int fd, int revents, void *cb_data)
 		if (bytes_read < 0) {
 			sr_err("Failed to read FTDI data (%d): %s.",
 			       bytes_read, ftdi_get_error_string(devc->ftdic));
-			sdi->driver->dev_acquisition_stop(sdi, sdi);
+			sdi->driver->dev_acquisition_stop(sdi);
 			return FALSE;
 		}
 		if (bytes_read == 0) {
@@ -648,12 +645,12 @@ SR_PRIV int p_ols_receive_data(int fd, int revents, void *cb_data)
 				logic.unitsize = 4;
 				logic.data = devc->raw_sample_buf +
 					(devc->limit_samples - devc->num_samples) * 4;
-				sr_session_send(cb_data, &packet);
+				sr_session_send(sdi, &packet);
 			}
 
 			/* Send the trigger. */
 			packet.type = SR_DF_TRIGGER;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 
 			/* Send post-trigger samples. */
 			packet.type = SR_DF_LOGIC;
@@ -662,7 +659,7 @@ SR_PRIV int p_ols_receive_data(int fd, int revents, void *cb_data)
 			logic.unitsize = 4;
 			logic.data = devc->raw_sample_buf + devc->trigger_at * 4 +
 				(devc->limit_samples - devc->num_samples) * 4;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		} else {
 			/* no trigger was used */
 			packet.type = SR_DF_LOGIC;
@@ -671,11 +668,11 @@ SR_PRIV int p_ols_receive_data(int fd, int revents, void *cb_data)
 			logic.unitsize = 4;
 			logic.data = devc->raw_sample_buf +
 				(devc->limit_samples - devc->num_samples) * 4;
-			sr_session_send(cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		}
 		g_free(devc->raw_sample_buf);
 
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
+		sdi->driver->dev_acquisition_stop(sdi);
 	}
 
 	return TRUE;

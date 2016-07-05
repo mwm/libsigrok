@@ -36,29 +36,17 @@ static const uint32_t devopts[] = {
 	SR_CONF_SOUNDLEVELMETER,
 	SR_CONF_CONTINUOUS,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_SET,
+	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
 };
-
-SR_PRIV struct sr_dev_driver tondaj_sl_814_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_dev_inst *sdi;
 	struct sr_config *src;
-	GSList *devices, *l;
+	GSList *l;
 	const char *conn, *serialcomm;
 	struct sr_serial_dev_inst *serial;
-
-	drvc = di->context;
-	drvc->instances = NULL;
-
-	devices = NULL;
 
 	conn = serialcomm = NULL;
 	for (l = options; l; l = l->next) {
@@ -88,6 +76,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->vendor = g_strdup("Tondaj");
 	sdi->model = g_strdup("SL-814");
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
 
@@ -98,22 +87,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sdi->conn = serial;
 
 	sdi->priv = devc;
-	sdi->driver = di;
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -128,15 +104,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -161,20 +129,17 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-				    void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
-	struct dev_context *devc;
+	struct dev_context *devc = sdi->priv;
 	struct sr_serial_dev_inst *serial;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	devc = sdi->priv;
-	devc->cb_data = cb_data;
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	std_session_send_df_header(sdi);
+	
+	sr_sw_limits_acquisition_start(&devc->limits);
 
 	/* Poll every 500ms, or whenever some data comes in. */
 	serial = sdi->conn;
@@ -184,20 +149,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data, std_serial_dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver tondaj_sl_814_driver_info = {
+static struct sr_dev_driver tondaj_sl_814_driver_info = {
 	.name = "tondaj-sl-814",
 	.longname = "Tondaj SL-814",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
@@ -205,6 +164,7 @@ SR_PRIV struct sr_dev_driver tondaj_sl_814_driver_info = {
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(tondaj_sl_814_driver_info);

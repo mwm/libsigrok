@@ -44,9 +44,7 @@ static const char *channel_names[] = {
 /* Note: The IKALOGIC ScanaPLUS always samples at 100MHz. */
 static const uint64_t samplerates[1] = { SR_MHZ(100) };
 
-SR_PRIV struct sr_dev_driver ikalogic_scanaplus_driver_info;
-
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data);
+static int dev_acquisition_stop(struct sr_dev_inst *sdi);
 
 static void clear_helper(void *priv)
 {
@@ -65,25 +63,14 @@ static int dev_clear(const struct sr_dev_driver *di)
 	return std_dev_clear(di, clear_helper);
 }
 
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
-	GSList *devices;
 	unsigned int i;
 	int ret;
 
 	(void)options;
-
-	drvc = di->context;
-
-	devices = NULL;
 
 	/* Allocate memory for our private device context. */
 	devc = g_malloc0(sizeof(struct dev_context));
@@ -119,22 +106,18 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	/* Register the device with libsigrok. */
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
-	sdi->status = SR_ST_INITIALIZING;
+	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup(USB_VENDOR_NAME);
 	sdi->model = g_strdup(USB_MODEL_NAME);
-	sdi->driver = di;
 	sdi->priv = devc;
 
 	for (i = 0; i < ARRAY_SIZE(channel_names); i++)
 		sr_channel_new(sdi, i, SR_CHANNEL_LOGIC, TRUE, channel_names[i]);
 
-	devices = g_slist_append(devices, sdi);
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-
 	/* Close device. We'll reopen it again when we need it. */
 	scanaplus_close(devc);
 
-	return devices;
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 
 	scanaplus_close(devc);
 err_free_ftdic:
@@ -147,11 +130,6 @@ err_free_devc:
 	g_free(devc);
 
 	return NULL;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
@@ -261,11 +239,6 @@ static int dev_close(struct sr_dev_inst *sdi)
 	return ret;
 }
 
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return dev_clear(di);
-}
-
 static int config_get(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -350,7 +323,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	int ret;
 	struct dev_context *devc;
@@ -358,15 +331,12 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv))
-		return SR_ERR_BUG;
+	devc = sdi->priv;
 
 	if (!devc->ftdic)
 		return SR_ERR_BUG;
 
 	/* TODO: Configure channels later (thresholds etc.). */
-
-	devc->cb_data = cb_data;
 
 	/* Properly reset internal variables before every new acquisition. */
 	devc->compressed_bytes_ignored = 0;
@@ -379,8 +349,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if ((ret = scanaplus_start_acquisition(devc)) < 0)
 		return ret;
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(sdi, LOG_PREFIX);
+	std_session_send_df_header(sdi);
 
 	/* Hook up a dummy handler to receive data from the device. */
 	sr_session_source_add(sdi->session, -1, 0, 0, scanaplus_receive_data, (void *)sdi);
@@ -388,31 +357,23 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	struct sr_datafeed_packet packet;
-
-	(void)cb_data;
-
 	sr_dbg("Stopping acquisition.");
 	sr_session_source_remove(sdi->session, -1);
-
-	/* Send end packet to the session bus. */
-	sr_dbg("Sending SR_DF_END.");
-	packet.type = SR_DF_END;
-	sr_session_send(sdi, &packet);
+	std_session_send_df_end(sdi);
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver ikalogic_scanaplus_driver_info = {
+static struct sr_dev_driver ikalogic_scanaplus_driver_info = {
 	.name = "ikalogic-scanaplus",
 	.longname = "IKALOGIC ScanaPLUS",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = dev_clear,
 	.config_get = config_get,
 	.config_set = config_set,
@@ -423,3 +384,4 @@ SR_PRIV struct sr_dev_driver ikalogic_scanaplus_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(ikalogic_scanaplus_driver_info);

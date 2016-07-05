@@ -33,6 +33,11 @@ SR_API int sr_analog_to_float(const struct sr_datafeed_analog *analog,
 SR_API int sr_analog_unit_to_string(const struct sr_datafeed_analog *analog,
 		char **result);
 SR_API void sr_rational_set(struct sr_rational *r, int64_t p, uint64_t q);
+SR_API int sr_rational_eq(const struct sr_rational *a, const struct sr_rational *b);
+SR_API int sr_rational_mult(struct sr_rational *res, const struct sr_rational *a,
+		const struct sr_rational *b);
+SR_API int sr_rational_div(struct sr_rational *res, const struct sr_rational *num,
+		const struct sr_rational *div);
 
 /*--- backend.c -------------------------------------------------------------*/
 
@@ -56,6 +61,10 @@ SR_API int sr_dev_channel_name_set(struct sr_channel *channel,
 SR_API int sr_dev_channel_enable(struct sr_channel *channel,
 		gboolean state);
 SR_API gboolean sr_dev_has_option(const struct sr_dev_inst *sdi, int key);
+SR_API int sr_dev_config_capabilities_list(const struct sr_dev_inst *sdi,
+		const struct sr_channel_group *cg, int key);
+SR_API GArray *sr_dev_options(const struct sr_dev_driver *driver,
+		const struct sr_dev_inst *sdi, const struct sr_channel_group *cg);
 SR_API GSList *sr_dev_list(const struct sr_dev_driver *driver);
 SR_API int sr_dev_clear(const struct sr_dev_driver *driver);
 SR_API int sr_dev_open(struct sr_dev_inst *sdi);
@@ -79,6 +88,7 @@ SR_API int sr_dev_inst_channel_add(struct sr_dev_inst *sdi, int index, int type,
 SR_API struct sr_dev_driver **sr_driver_list(const struct sr_context *ctx);
 SR_API int sr_driver_init(struct sr_context *ctx,
 		struct sr_dev_driver *driver);
+SR_API GArray *sr_driver_scan_options_list(const struct sr_dev_driver *driver);
 SR_API GSList *sr_driver_scan(struct sr_dev_driver *driver, GSList *options);
 SR_API int sr_config_get(const struct sr_dev_driver *driver,
 		const struct sr_dev_inst *sdi,
@@ -110,6 +120,8 @@ SR_API int sr_session_new(struct sr_context *ctx, struct sr_session **session);
 SR_API int sr_session_destroy(struct sr_session *session);
 SR_API int sr_session_dev_remove_all(struct sr_session *session);
 SR_API int sr_session_dev_add(struct sr_session *session,
+		struct sr_dev_inst *sdi);
+SR_API int sr_session_dev_remove(struct sr_session *session,
 		struct sr_dev_inst *sdi);
 SR_API int sr_session_dev_list(struct sr_session *session, GSList **devlist);
 SR_API int sr_session_trigger_set(struct sr_session *session, struct sr_trigger *trig);
@@ -147,6 +159,7 @@ SR_API int sr_input_scan_file(const char *filename, const struct sr_input **in);
 SR_API struct sr_dev_inst *sr_input_dev_inst_get(const struct sr_input *in);
 SR_API int sr_input_send(const struct sr_input *in, GString *buf);
 SR_API int sr_input_end(const struct sr_input *in);
+SR_API int sr_input_reset(const struct sr_input *in);
 SR_API void sr_input_free(const struct sr_input *in);
 
 /*--- output/output.c -------------------------------------------------------*/
@@ -199,7 +212,7 @@ typedef int (*sr_resource_open_callback)(struct sr_resource *res,
 		const char *name, void *cb_data);
 typedef int (*sr_resource_close_callback)(struct sr_resource *res,
 		void *cb_data);
-typedef ssize_t (*sr_resource_read_callback)(const struct sr_resource *res,
+typedef gssize (*sr_resource_read_callback)(const struct sr_resource *res,
 		void *buf, size_t count, void *cb_data);
 
 SR_API int sr_resource_set_hooks(struct sr_context *ctx,
@@ -218,6 +231,7 @@ SR_API uint64_t sr_parse_timestring(const char *timestring);
 SR_API gboolean sr_parse_boolstring(const char *boolstring);
 SR_API int sr_parse_period(const char *periodstr, uint64_t *p, uint64_t *q);
 SR_API int sr_parse_voltage(const char *voltstr, uint64_t *p, uint64_t *q);
+SR_API int sr_parse_rational(const char *str, struct sr_rational *ret);
 
 /*--- version.c -------------------------------------------------------------*/
 

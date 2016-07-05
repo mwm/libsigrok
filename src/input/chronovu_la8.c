@@ -87,7 +87,7 @@ static int process_buffer(struct sr_input *in)
 
 	inc = in->priv;
 	if (!inc->started) {
-		std_session_send_df_header(in->sdi, LOG_PREFIX);
+		std_session_send_df_header(in->sdi);
 
 		if (inc->samplerate) {
 			packet.type = SR_DF_META;
@@ -95,6 +95,7 @@ static int process_buffer(struct sr_input *in)
 			src = sr_config_new(SR_CONF_SAMPLERATE, g_variant_new_uint64(inc->samplerate));
 			meta.config = g_slist_append(NULL, src);
 			sr_session_send(in->sdi, &packet);
+			g_slist_free(meta.config);
 			sr_config_free(src);
 		}
 
@@ -139,7 +140,6 @@ static int receive(struct sr_input *in, GString *buf)
 static int end(struct sr_input *in)
 {
 	struct context *inc;
-	struct sr_datafeed_packet packet;
 	int ret;
 
 	if (in->sdi_ready)
@@ -148,12 +148,20 @@ static int end(struct sr_input *in)
 		ret = SR_OK;
 
 	inc = in->priv;
-	if (inc->started) {
-		packet.type = SR_DF_END;
-		sr_session_send(in->sdi, &packet);
-	}
+	if (inc->started)
+		std_session_send_df_end(in->sdi);
 
 	return ret;
+}
+
+static int reset(struct sr_input *in)
+{
+	struct context *inc = in->priv;
+
+	inc->started = FALSE;
+	g_string_truncate(in->buf, 0);
+
+	return SR_OK;
 }
 
 static struct sr_option options[] = {
@@ -183,4 +191,5 @@ SR_PRIV struct sr_input_module input_chronovu_la8 = {
 	.init = init,
 	.receive = receive,
 	.end = end,
+	.reset = reset,
 };

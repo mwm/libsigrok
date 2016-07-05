@@ -90,7 +90,7 @@ enum {
 /** Private, per-device-instance driver context. */
 struct dev_context {
 	/* Device state */
-	uint64_t cur_mqflags;
+	enum sr_mqflag cur_mqflags;
 	int recording;
 	int cur_meas_range;
 	int cur_data_source;
@@ -104,7 +104,6 @@ struct dev_context {
 	gboolean enable_data_source_memory;
 
 	/* Temporary state across callbacks */
-	void *cb_data;
 	unsigned char cmd;
 	unsigned char token;
 	int buf_len;

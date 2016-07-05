@@ -64,7 +64,7 @@ SR_PRIV int beaglelogic_receive_data(int fd, int revents, void *cb_data)
 
 		if (devc->trigger_fired) {
 			/* Send the incoming transfer to the session bus. */
-			sr_session_send(devc->cb_data, &packet);
+			sr_session_send(sdi, &packet);
 		} else {
 			/* Check for trigger */
 			trigger_offset = soft_trigger_logic_check(devc->stl,
@@ -76,7 +76,7 @@ SR_PRIV int beaglelogic_receive_data(int fd, int revents, void *cb_data)
 						bytes_remaining);
 				logic.data += trigger_offset;
 
-				sr_session_send(devc->cb_data, &packet);
+				sr_session_send(sdi, &packet);
 
 				devc->trigger_fired = TRUE;
 			}
@@ -101,10 +101,7 @@ SR_PRIV int beaglelogic_receive_data(int fd, int revents, void *cb_data)
 	if (devc->bytes_read >= devc->limit_samples * logic.unitsize ||
 			packetsize == 0) {
 		/* Send EOA Packet, stop polling */
-		packet.type = SR_DF_END;
-		packet.payload = NULL;
-		sr_session_send(devc->cb_data, &packet);
-
+		std_session_send_df_end(sdi);
 		sr_session_source_remove_pollfd(sdi->session, &devc->pollfd);
 	}
 

@@ -56,30 +56,31 @@ static struct sr_channel *teleinfo_find_channel(struct sr_dev_inst *sdi,
 }
 
 static void teleinfo_send_value(struct sr_dev_inst *sdi, const char *channel_name,
-                                float value, int mq, int unit)
+                                float value, enum sr_mq mq, enum sr_unit unit)
 {
-	struct dev_context *devc;
 	struct sr_datafeed_packet packet;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_channel *ch;
 
-	devc = sdi->priv;
 	ch = teleinfo_find_channel(sdi, channel_name);
 
 	if (!ch || !ch->enabled)
 		return;
 
-	memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-	analog.channels = g_slist_append(analog.channels, ch);
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	analog.meaning->channels = g_slist_append(analog.meaning->channels, ch);
 	analog.num_samples = 1;
-	analog.mq = mq;
-	analog.unit = unit;
+	analog.meaning->mq = mq;
+	analog.meaning->unit = unit;
 	analog.data = &value;
 
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	sr_session_send(devc->session_cb_data, &packet);
-	g_slist_free(analog.channels);
+	sr_session_send(sdi, &packet);
+	g_slist_free(analog.meaning->channels);
 }
 
 static void teleinfo_handle_measurement(struct sr_dev_inst *sdi,
@@ -95,7 +96,7 @@ static void teleinfo_handle_measurement(struct sr_dev_inst *sdi,
 	}
 
 	if (!strcmp(label, "ADCO")) {
-		devc->num_samples++;
+		sr_sw_limits_update_samples_read(&devc->sw_limits, 1);
 	} else if (!strcmp(label, "BASE")) {
 		teleinfo_send_value(sdi, "BASE", v, SR_MQ_POWER, SR_UNIT_WATT_HOUR);
 	} else if (!strcmp(label, "HCHP")) {
@@ -186,7 +187,6 @@ SR_PRIV int teleinfo_receive_data(int fd, int revents, void *cb_data)
 	struct sr_serial_dev_inst *serial;
 	const uint8_t *ptr, *next_ptr, *end_ptr;
 	int len;
-	int64_t time;
 
 	(void)fd;
 
@@ -219,19 +219,8 @@ SR_PRIV int teleinfo_receive_data(int fd, int revents, void *cb_data)
 		return FALSE;
 	}
 
-	if (devc->limit_samples && devc->num_samples >= devc->limit_samples) {
-		sr_info("Requested number of samples reached.");
-		sdi->driver->dev_acquisition_stop(sdi, devc->session_cb_data);
-		return TRUE;
-	}
+	if (sr_sw_limits_check(&devc->sw_limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
-	if (devc->limit_msec) {
-		time = (g_get_monotonic_time() - devc->start_time) / 1000;
-		if (time > (int64_t)devc->limit_msec) {
-			sr_info("Requested time limit reached.");
-			sdi->driver->dev_acquisition_stop(sdi, devc->session_cb_data);
-			return TRUE;
-		}
-	}
 	return TRUE;
 }

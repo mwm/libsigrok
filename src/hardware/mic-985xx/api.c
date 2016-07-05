@@ -36,13 +36,13 @@ static const uint32_t drvopts_temp_hum[] = {
 };
 
 static const uint32_t devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_LIMIT_SAMPLES | SR_CONF_SET,
 	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
 };
 
-SR_PRIV struct sr_dev_driver mic_98581_driver_info;
-SR_PRIV struct sr_dev_driver mic_98583_driver_info;
+static struct sr_dev_driver mic_98581_driver_info;
+static struct sr_dev_driver mic_98583_driver_info;
 
 SR_PRIV const struct mic_dev_info mic_devs[] = {
 	{
@@ -57,31 +57,17 @@ SR_PRIV const struct mic_dev_info mic_devs[] = {
 	},
 };
 
-static int dev_clear(int idx)
-{
-	return std_dev_clear(mic_devs[idx].di, NULL);
-}
-
-static int init(struct sr_context *sr_ctx, int idx)
-{
-	return std_init(sr_ctx, mic_devs[idx].di, LOG_PREFIX);
-}
-
 static GSList *mic_scan(const char *conn, const char *serialcomm, int idx)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
-	GSList *devices;
 
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
 
 	if (serial_open(serial, SERIAL_RDWR) != SR_OK)
 		return NULL;
 
-	drvc = mic_devs[idx].di->context;
-	devices = NULL;
 	serial_flush(serial);
 
 	/* TODO: Query device type. */
@@ -95,22 +81,19 @@ static GSList *mic_scan(const char *conn, const char *serialcomm, int idx)
 	sdi->vendor = g_strdup(mic_devs[idx].vendor);
 	sdi->model = g_strdup(mic_devs[idx].device);
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->limits);
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
 	sdi->priv = devc;
-	sdi->driver = mic_devs[idx].di;
 
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "Temperature");
 
 	if (mic_devs[idx].has_humidity)
 		sr_channel_new(sdi, 1, SR_CHANNEL_ANALOG, TRUE, "Humidity");
 
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
-
 	serial_close(serial);
 
-	return devices;
+	return std_scan_complete(mic_devs[idx].di, g_slist_append(NULL, sdi));
 }
 
 static GSList *scan(GSList *options, int idx)
@@ -145,16 +128,6 @@ static GSList *scan(GSList *options, int idx)
 	return devices;
 }
 
-static GSList *dev_list(int idx)
-{
-	return ((struct drv_context *)(mic_devs[idx].di->context))->instances;
-}
-
-static int cleanup(int idx)
-{
-	return dev_clear(idx);
-}
-
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
@@ -167,18 +140,7 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 
 	devc = sdi->priv;
 
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	default:
-		return SR_ERR_NA;
-	}
-
-	return SR_OK;
+	return sr_sw_limits_config_set(&devc->limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -212,8 +174,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi,
-				    void *cb_data, int idx)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi, int idx)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -222,12 +183,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 		return SR_ERR_DEV_CLOSED;
 
 	devc = sdi->priv;
-	devc->cb_data = cb_data;
-	devc->num_samples = 0;
-	devc->starttime = g_get_monotonic_time();
 
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->limits);
+	std_session_send_df_header(sdi);
 
 	/* Poll every 100ms, or whenever some data comes in. */
 	serial = sdi->conn;
@@ -237,63 +195,41 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi,
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data, std_serial_dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
 /* Driver-specific API function wrappers */
-#define HW_INIT(X) \
-static int init_##X(struct sr_dev_driver *di, struct sr_context *sr_ctx) { \
-	(void)di; return init(sr_ctx, X); }
-#define HW_CLEANUP(X) \
-static int cleanup_##X(const struct sr_dev_driver *di) { \
-	(void)di; return cleanup(X); }
 #define HW_SCAN(X) \
 static GSList *scan_##X(struct sr_dev_driver *di, GSList *options) { \
 	(void)di; return scan(options, X); }
-#define HW_DEV_LIST(X) \
-static GSList *dev_list_##X(const struct sr_dev_driver *di) { \
-	(void)di; return dev_list(X); }
-#define HW_DEV_CLEAR(X) \
-static int dev_clear_##X(const struct sr_dev_driver *di) { \
-	(void)di; return dev_clear(X); }
 #define HW_CONFIG_LIST(X) \
 static int config_list_##X(uint32_t key, GVariant **data, \
 const struct sr_dev_inst *sdi, const struct sr_channel_group *cg) { \
 return config_list(key, data, sdi, cg, X); }
 #define HW_DEV_ACQUISITION_START(X) \
-static int dev_acquisition_start_##X(const struct sr_dev_inst *sdi, \
-void *cb_data) { return dev_acquisition_start(sdi, cb_data, X); }
+static int dev_acquisition_start_##X(const struct sr_dev_inst *sdi \
+) { return dev_acquisition_start(sdi, X); }
 
 /* Driver structs and API function wrappers */
 #define DRV(ID, ID_UPPER, NAME, LONGNAME) \
-HW_INIT(ID_UPPER) \
-HW_CLEANUP(ID_UPPER) \
 HW_SCAN(ID_UPPER) \
-HW_DEV_LIST(ID_UPPER) \
-HW_DEV_CLEAR(ID_UPPER) \
 HW_CONFIG_LIST(ID_UPPER) \
 HW_DEV_ACQUISITION_START(ID_UPPER) \
-SR_PRIV struct sr_dev_driver ID##_driver_info = { \
+static struct sr_dev_driver ID##_driver_info = { \
 	.name = NAME, \
 	.longname = LONGNAME, \
 	.api_version = 1, \
-	.init = init_##ID_UPPER, \
-	.cleanup = cleanup_##ID_UPPER, \
+	.init = std_init, \
+	.cleanup = std_cleanup, \
 	.scan = scan_##ID_UPPER, \
-	.dev_list = dev_list_##ID_UPPER, \
-	.dev_clear = dev_clear_##ID_UPPER, \
+	.dev_list = std_dev_list, \
 	.config_get = NULL, \
 	.config_set = config_set, \
 	.config_list = config_list_##ID_UPPER, \
 	.dev_open = std_serial_dev_open, \
 	.dev_close = std_serial_dev_close, \
 	.dev_acquisition_start = dev_acquisition_start_##ID_UPPER, \
-	.dev_acquisition_stop = dev_acquisition_stop, \
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop, \
 	.context = NULL, \
-};
+}; \
+SR_REGISTER_DEV_DRIVER(ID##_driver_info)
 
 DRV(mic_98581, MIC_98581, "mic-98581", "MIC 98581")
 DRV(mic_98583, MIC_98583, "mic-98583", "MIC 98583")

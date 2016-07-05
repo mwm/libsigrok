@@ -39,25 +39,14 @@ static const uint32_t devopts[] = {
 	SR_CONF_OVER_CURRENT_PROTECTION_ENABLED | SR_CONF_SET,
 };
 
-SR_PRIV struct sr_dev_driver conrad_digi_35_cpu_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
 	struct sr_dev_inst *sdi;
-	struct drv_context *drvc;
 	struct sr_config *src;
 	struct sr_serial_dev_inst *serial;
-	GSList *l, *devices;
+	GSList *l;
 	const char *conn, *serialcomm;
 
-	devices = NULL;
-	drvc = di->context;
-	drvc->instances = NULL;
 	conn = serialcomm = NULL;
 
 	for (l = options; l; l = l->next) {
@@ -93,27 +82,14 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	sr_spew("Conrad DIGI 35 CPU assumed at %s.", conn);
 
 	sdi = g_malloc0(sizeof(struct sr_dev_inst));
-	sdi->status = SR_ST_ACTIVE;
+	sdi->status = SR_ST_INACTIVE;
 	sdi->vendor = g_strdup("Conrad");
 	sdi->model = g_strdup("DIGI 35 CPU");
 	sdi->conn = serial;
 	sdi->priv = NULL;
-	sdi->driver = di;
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "CH1");
-	drvc->instances = g_slist_append(drvc->instances, sdi);
-	devices = g_slist_append(devices, sdi);
 
-	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
+	return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
@@ -182,34 +158,30 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return ret;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
-	(void)cb_data;
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
-	(void)cb_data;
-
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
 	return SR_OK;
 }
 
-SR_PRIV struct sr_dev_driver conrad_digi_35_cpu_driver_info = {
+static struct sr_dev_driver conrad_digi_35_cpu_driver_info = {
 	.name = "conrad-digi-35-cpu",
 	.longname = "Conrad DIGI 35 CPU",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
@@ -220,3 +192,4 @@ SR_PRIV struct sr_dev_driver conrad_digi_35_cpu_driver_info = {
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(conrad_digi_35_cpu_driver_info);

@@ -28,7 +28,7 @@
 #include "libsigrok-internal.h"
 
 /* SR_CONF_CONN takes one of these: */
-#define CONN_USB_VIDPID  "^([0-9a-z]{4})\\.([0-9a-z]{4})$"
+#define CONN_USB_VIDPID  "^([0-9a-fA-F]{4})\\.([0-9a-fA-F]{4})$"
 #define CONN_USB_BUSADDR "^(\\d+)\\.(\\d+)$"
 
 #define LOG_PREFIX "usb"
@@ -134,10 +134,6 @@ static gboolean usb_source_dispatch(GSource *source,
 		pollfd = g_ptr_array_index(usource->pollfds, i);
 		revents |= pollfd->revents;
 	}
-	if (revents != 0)
-		sr_spew("%s: revents 0x%.2X", __func__, revents);
-	else
-		sr_spew("%s: timed out", __func__);
 
 	if (!callback) {
 		sr_err("Callback not set, cannot dispatch event.");
@@ -359,7 +355,7 @@ SR_PRIV GSList *sr_usb_find(libusb_context *usb_ctx, const char *conn)
 		return NULL;
 	}
 
-	if (bus > 64) {
+	if (bus > 255) {
 		sr_err("Invalid bus specified: %d.", bus);
 		return NULL;
 	}

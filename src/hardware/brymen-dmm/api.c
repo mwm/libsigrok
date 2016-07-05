@@ -32,19 +32,11 @@ static const uint32_t devopts[] = {
 	SR_CONF_LIMIT_MSEC | SR_CONF_SET,
 };
 
-SR_PRIV struct sr_dev_driver brymen_bm857_driver_info;
-static struct sr_dev_driver *di = &brymen_bm857_driver_info;
-
-static int init(struct sr_dev_driver *di, struct sr_context *sr_ctx)
-{
-	return std_init(sr_ctx, di, LOG_PREFIX);
-}
-
-static GSList *brymen_scan(const char *conn, const char *serialcomm)
+static GSList *brymen_scan(struct sr_dev_driver *di, const char *conn,
+	const char *serialcomm)
 {
 	struct sr_dev_inst *sdi;
 	struct dev_context *devc;
-	struct drv_context *drvc;
 	struct sr_serial_dev_inst *serial;
 	GSList *devices;
 	int ret;
@@ -79,31 +71,26 @@ static GSList *brymen_scan(const char *conn, const char *serialcomm)
 	sdi->vendor = g_strdup("Brymen");
 	sdi->model = g_strdup("BM85x");
 	devc = g_malloc0(sizeof(struct dev_context));
+	sr_sw_limits_init(&devc->sw_limits);
 	sdi->inst_type = SR_INST_SERIAL;
 	sdi->conn = serial;
-	drvc = di->context;
 	sdi->priv = devc;
-	sdi->driver = di;
 	sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
-	drvc->instances = g_slist_append(drvc->instances, sdi);
 	devices = g_slist_append(devices, sdi);
 
 scan_cleanup:
 	serial_close(serial);
 
-	return devices;
+	return std_scan_complete(di, devices);
 }
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
 	struct sr_config *src;
 	GSList *devices, *l;
 	const char *conn, *serialcomm;
 
 	devices = NULL;
-	drvc = di->context;
-	drvc->instances = NULL;
 
 	conn = serialcomm = NULL;
 	for (l = options; l; l = l->next) {
@@ -122,54 +109,28 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 	if (serialcomm) {
 		/* Use the provided comm specs. */
-		devices = brymen_scan(conn, serialcomm);
+		devices = brymen_scan(di, conn, serialcomm);
 	} else {
 		/* But 9600/8n1 should work all of the time. */
-		devices = brymen_scan(conn, "9600/8n1/dtr=1/rts=1");
+		devices = brymen_scan(di, conn, "9600/8n1/dtr=1/rts=1");
 	}
 
 	return devices;
-}
-
-static GSList *dev_list(const struct sr_dev_driver *di)
-{
-	return ((struct drv_context *)(di->context))->instances;
-}
-
-static int cleanup(const struct sr_dev_driver *di)
-{
-	return std_dev_clear(di, NULL);
 }
 
 static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
 		const struct sr_channel_group *cg)
 {
 	struct dev_context *devc;
-	int ret;
 
 	(void)cg;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	ret = SR_OK;
-	switch (key) {
-	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
-	default:
-		ret = SR_ERR_NA;
-	}
-
-	return ret;
+	return sr_sw_limits_config_set(&devc->sw_limits, key, data);
 }
 
 static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *sdi,
@@ -194,7 +155,7 @@ static int config_list(uint32_t key, GVariant **data, const struct sr_dev_inst *
 	return SR_OK;
 }
 
-static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
+static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
 	struct sr_serial_dev_inst *serial;
@@ -202,23 +163,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
-	devc->cb_data = cb_data;
-
-	/*
-	 * Reset the number of samples to take. If we've already collected our
-	 * quota, but we start a new session, and don't reset this, we'll just
-	 * quit without acquiring any new samples.
-	 */
-	devc->num_samples = 0;
-	devc->starttime = g_get_monotonic_time();
-
-	/* Send header packet to the session bus. */
-	std_session_send_df_header(cb_data, LOG_PREFIX);
+	sr_sw_limits_acquisition_start(&devc->sw_limits);
+	std_session_send_df_header(sdi);
 
 	/* Poll every 50ms, or whenever some data comes in. */
 	serial = sdi->conn;
@@ -228,20 +176,14 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi, void *cb_data)
 	return SR_OK;
 }
 
-static int dev_acquisition_stop(struct sr_dev_inst *sdi, void *cb_data)
-{
-	return std_serial_dev_acquisition_stop(sdi, cb_data, std_serial_dev_close,
-			sdi->conn, LOG_PREFIX);
-}
-
-SR_PRIV struct sr_dev_driver brymen_bm857_driver_info = {
+static struct sr_dev_driver brymen_bm857_driver_info = {
 	.name = "brymen-bm857",
 	.longname = "Brymen BM857",
 	.api_version = 1,
-	.init = init,
-	.cleanup = cleanup,
+	.init = std_init,
+	.cleanup = std_cleanup,
 	.scan = scan,
-	.dev_list = dev_list,
+	.dev_list = std_dev_list,
 	.dev_clear = NULL,
 	.config_get = NULL,
 	.config_set = config_set,
@@ -249,6 +191,7 @@ SR_PRIV struct sr_dev_driver brymen_bm857_driver_info = {
 	.dev_open = std_serial_dev_open,
 	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
-	.dev_acquisition_stop = dev_acquisition_stop,
+	.dev_acquisition_stop = std_serial_dev_acquisition_stop,
 	.context = NULL,
 };
+SR_REGISTER_DEV_DRIVER(brymen_bm857_driver_info);

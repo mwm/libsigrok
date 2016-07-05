@@ -60,14 +60,21 @@ namespace std {
    for the map instantiation from compiling. */
 %template(ConfigVector)
     std::vector<const sigrok::ConfigKey *>;
+
 %template(ConfigMap)
     std::map<const sigrok::ConfigKey *, Glib::VariantBase>;
 
-%template(CapabilitySet)
-    std::set<enum sigrok::Capability>;
+%template(ConfigSet)
+    std::set<const sigrok::ConfigKey *>;
 
-%template(ConfigKeys)
-    std::map<const sigrok::ConfigKey *, std::set<enum sigrok::Capability> >;
+/* Workaround for SWIG bug. The vector template instantiation
+   isn't needed but somehow fixes a bug that stops the wrapper
+   for the set instantiation from compiling. */
+%template(CapabilityVector)
+    std::vector<const sigrok::Capability *>;
+
+%template(CapabilitySet)
+    std::set<const sigrok::Capability *>;
 
 %template(OptionVector)
     std::vector<std::shared_ptr<sigrok::Option> >;

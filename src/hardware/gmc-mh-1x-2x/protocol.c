@@ -305,6 +305,9 @@ static void decode_rs_18(uint8_t rs, struct dev_context *devc)
 		devc->scale *= pow(10.0, range - 13);
 		break;
 		/* TODO: 29S Mains measurements. */
+	default:
+		/* Avoid certain compiler warnings due to (-Wswitch). */
+		break;
 	}
 }
 
@@ -551,6 +554,9 @@ static void decode_rs_2x(uint8_t rs, struct dev_context *devc)
 		devc->scale *= pow(10.0, range - 13);
 		break;
 	/* TODO: 29S Mains measurements. */
+	default:
+		/* Avoid certain compiler warnings due to (-Wswitch). */
+		break;
 	}
 }
 
@@ -652,25 +658,28 @@ static void clean_ctmv_rs_v(struct dev_context *devc)
 static void send_value(struct sr_dev_inst *sdi)
 {
 	struct dev_context *devc;
-	struct sr_datafeed_analog_old analog;
+	struct sr_datafeed_analog analog;
+	struct sr_analog_encoding encoding;
+	struct sr_analog_meaning meaning;
+	struct sr_analog_spec spec;
 	struct sr_datafeed_packet packet;
 
 	devc = sdi->priv;
 
-	memset(&analog, 0, sizeof(struct sr_datafeed_analog_old));
-	analog.channels = sdi->channels;
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	analog.meaning->channels = sdi->channels;
 	analog.num_samples = 1;
-	analog.mq = devc->mq;
-	analog.unit = devc->unit;
-	analog.mqflags = devc->mqflags;
+	analog.meaning->mq = devc->mq;
+	analog.meaning->unit = devc->unit;
+	analog.meaning->mqflags = devc->mqflags;
 	analog.data = &devc->value;
 
 	memset(&packet, 0, sizeof(struct sr_datafeed_packet));
-	packet.type = SR_DF_ANALOG_OLD;
+	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
-	sr_session_send(devc->cb_data, &packet);
+	sr_session_send(sdi, &packet);
 
-	devc->num_samples++;
+	sr_sw_limits_update_samples_read(&devc->limits, 1);
 }
 
 /** Process 6-byte data message, Metrahit 1x/2x send mode. */
@@ -858,7 +867,7 @@ static void process_msg_inf_13(struct sr_dev_inst *sdi)
 	}
 	sr_spew("process_msg_inf_13() value=%f scale=%f scale1000=%d mq=%d "
 		"unit=%d mqflags=0x%02" PRIx64, devc->value, devc->scale,
-		devc->scale1000, devc->mq, devc->unit, devc->mqflags);
+		devc->scale1000, devc->mq, devc->unit, (uint64_t)devc->mqflags);
 	if (devc->value != NAN)
 		devc->value *= devc->scale * pow(1000.0, devc->scale1000);
 
@@ -873,7 +882,7 @@ static void process_msg_inf_13(struct sr_dev_inst *sdi)
  *  @param buf Pointer to array of 14 data bytes.
  *  @param[in] raw Write only data bytes, no interpretation.
  */
-void dump_msg14(guchar *buf, gboolean raw)
+static void dump_msg14(guchar *buf, gboolean raw)
 {
 	if (!buf)
 		return;
@@ -1074,7 +1083,7 @@ SR_PRIV int process_msg14(struct sr_dev_inst *sdi)
 		}
 		sr_spew("process_msg14() value=%f scale=%f scale1000=%d mq=%d "
 			"unit=%d mqflags=0x%02" PRIx64, devc->value, devc->scale,
-			devc->scale1000, devc->mq, devc->unit, devc->mqflags);
+			devc->scale1000, devc->mq, devc->unit, (uint64_t)devc->mqflags);
 		if (devc->value != NAN)
 			devc->value *= devc->scale * pow(1000.0, devc->scale1000);
 
@@ -1097,7 +1106,6 @@ SR_PRIV int gmc_mh_1x_2x_receive_data(int fd, int revents, void *cb_data)
 	struct sr_serial_dev_inst *serial;
 	uint8_t buf, msgt;
 	int len;
-	gdouble elapsed_s;
 
 	(void)fd;
 
@@ -1171,15 +1179,8 @@ SR_PRIV int gmc_mh_1x_2x_receive_data(int fd, int revents, void *cb_data)
 		}
 	}
 
-	/* If number of samples or time limit reached, stop acquisition. */
-	if (devc->limit_samples && (devc->num_samples >= devc->limit_samples))
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-
-	if (devc->limit_msec) {
-		elapsed_s = g_timer_elapsed(devc->elapsed_msec, NULL);
-		if ((elapsed_s * 1000) >= devc->limit_msec)
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-	}
+	if (sr_sw_limits_check(&devc->limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	return TRUE;
 }
@@ -1191,7 +1192,6 @@ SR_PRIV int gmc_mh_2x_receive_data(int fd, int revents, void *cb_data)
 	struct sr_serial_dev_inst *serial;
 	uint8_t buf;
 	int len;
-	gdouble elapsed_s;
 
 	(void)fd;
 
@@ -1222,15 +1222,8 @@ SR_PRIV int gmc_mh_2x_receive_data(int fd, int revents, void *cb_data)
 		}
 	}
 
-	/* If number of samples or time limit reached, stop acquisition. */
-	if (devc->limit_samples && (devc->num_samples >= devc->limit_samples))
-		sdi->driver->dev_acquisition_stop(sdi, cb_data);
-
-	if (devc->limit_msec) {
-		elapsed_s = g_timer_elapsed(devc->elapsed_msec, NULL);
-		if ((elapsed_s * 1000) >= devc->limit_msec)
-			sdi->driver->dev_acquisition_stop(sdi, cb_data);
-	}
+	if (sr_sw_limits_check(&devc->limits))
+		sdi->driver->dev_acquisition_stop(sdi);
 
 	/* Request next data set, if required */
 	if (sdi->status == SR_ST_ACTIVE) {
@@ -1261,7 +1254,7 @@ SR_PRIV int gmc_mh_2x_receive_data(int fd, int revents, void *cb_data)
  *  @param[in] params Further parameters (9 bytes)
  *  @param[out] buf Buffer to create msg in (42 bytes).
  */
-void create_cmd_14(guchar addr, guchar func, guchar *params, guchar *buf)
+static void create_cmd_14(guchar addr, guchar func, guchar *params, guchar *buf)
 {
 	uint8_t dta[GMC_REPLY_SIZE];	/* Unencoded message */
 	int cnt;
@@ -1519,10 +1512,7 @@ SR_PRIV int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *s
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	if (!(devc = sdi->priv)) {
-		sr_err("sdi->priv was NULL.");
-		return SR_ERR_BUG;
-	}
+	devc = sdi->priv;
 
 	switch (key) {
 	case SR_CONF_POWER_OFF:
@@ -1542,12 +1532,9 @@ SR_PRIV int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *s
 		else
 			g_usleep(2 * 1000 * 1000); /* Wait to ensure transfer before interface switched off. */
 		break;
-	case SR_CONF_LIMIT_MSEC:
-		devc->limit_msec = g_variant_get_uint64(data);
-		break;
 	case SR_CONF_LIMIT_SAMPLES:
-		devc->limit_samples = g_variant_get_uint64(data);
-		break;
+	case SR_CONF_LIMIT_MSEC:
+		return sr_sw_limits_config_set(&devc->limits, key, data);
 	default:
 		return SR_ERR_NA;
 	}

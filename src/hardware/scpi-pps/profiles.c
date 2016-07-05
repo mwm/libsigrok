@@ -31,7 +31,7 @@ static const uint32_t devopts_none[] = { };
 
 /* Agilent/Keysight N5700A series */
 static const uint32_t agilent_n5700a_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 };
 
 static const uint32_t agilent_n5700a_devopts_cg[] = {
@@ -44,12 +44,16 @@ static const uint32_t agilent_n5700a_devopts_cg[] = {
 	SR_CONF_ENABLED | SR_CONF_GET | SR_CONF_SET,
 };
 
+static const struct channel_group_spec agilent_n5700a_cg[] = {
+	{ "1", CH_IDX(0), PPS_OVP | PPS_OCP },
+};
+
 static const struct channel_spec agilent_n5767a_ch[] = {
 	{ "1", { 0, 60, 0.0001 }, { 0, 25, 0.1 }, FREQ_DC_ONLY },
 };
 
-static const struct channel_group_spec agilent_n5767a_cg[] = {
-	{ "1", CH_IDX(0), PPS_OVP | PPS_OCP },
+static const struct channel_spec agilent_n5763a_ch[] = {
+	{ "1", { 0, 12.5, 0.001 }, { 0, 25, 0.01 }, FREQ_DC_ONLY },
 };
 
 /*
@@ -81,7 +85,7 @@ static const struct scpi_command agilent_n5700a_cmd[] = {
 
 /* Chroma 61600 series AC source */
 static const uint32_t chroma_61604_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 };
 
 static const uint32_t chroma_61604_devopts_cg[] = {
@@ -128,7 +132,7 @@ static const struct scpi_command chroma_61604_cmd[] = {
 /* Chroma 62000 series DC source */
 
 static const uint32_t chroma_62000_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 };
 
 static const uint32_t chroma_62000_devopts_cg[] = {
@@ -210,7 +214,7 @@ static int chroma_62000p_probe_channels(struct sr_dev_inst *sdi,
 
 /* Rigol DP800 series */
 static const uint32_t rigol_dp800_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_OVER_TEMPERATURE_PROTECTION | SR_CONF_GET | SR_CONF_SET,
 };
 
@@ -294,8 +298,20 @@ static const struct scpi_command rigol_dp800_cmd[] = {
 };
 
 /* HP 663xx series */
+
+static const uint32_t hp_6630a_devopts[] = {
+	SR_CONF_CONTINUOUS,
+	SR_CONF_ENABLED | SR_CONF_SET,
+	SR_CONF_VOLTAGE | SR_CONF_GET,
+	SR_CONF_CURRENT | SR_CONF_GET,
+	SR_CONF_VOLTAGE_TARGET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_CURRENT_LIMIT | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_OVER_VOLTAGE_PROTECTION_THRESHOLD | SR_CONF_SET,
+	SR_CONF_OVER_CURRENT_PROTECTION_ENABLED | SR_CONF_SET,
+};
+
 static const uint32_t hp_6632b_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 	SR_CONF_ENABLED | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_VOLTAGE | SR_CONF_GET,
 	SR_CONF_CURRENT | SR_CONF_GET,
@@ -303,12 +319,29 @@ static const uint32_t hp_6632b_devopts[] = {
 	SR_CONF_CURRENT_LIMIT | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
+static const struct channel_spec hp_6633a_ch[] = {
+	{ "1", { 0, 51.188, 0.0125 }, { 0, 2.0475, 0.0005 }, FREQ_DC_ONLY },
+};
+
 static const struct channel_spec hp_6632b_ch[] = {
 	{ "1", { 0, 20.475, 0.005 }, { 0, 5.1188, 0.00132 }, FREQ_DC_ONLY },
 };
 
-static const struct channel_group_spec hp_6632b_cg[] = {
+static const struct channel_group_spec hp_663xx_cg[] = {
 	{ "1", CH_IDX(0), 0 },
+};
+
+static const struct scpi_command hp_6630a_cmd[] = {
+	{ SCPI_CMD_SET_OUTPUT_ENABLE, "OUT 1" },
+	{ SCPI_CMD_SET_OUTPUT_DISABLE, "OUT 0" },
+	{ SCPI_CMD_GET_MEAS_VOLTAGE, "VOUT?" },
+	{ SCPI_CMD_GET_MEAS_CURRENT, "IOUT?" },
+	{ SCPI_CMD_SET_VOLTAGE_TARGET, "VSET %.4f" },
+	{ SCPI_CMD_SET_CURRENT_LIMIT, "ISET %.4f" },
+	{ SCPI_CMD_SET_OVER_CURRENT_PROTECTION_ENABLE, "OCP 1" },
+	{ SCPI_CMD_SET_OVER_CURRENT_PROTECTION_DISABLE, "OCP 0" },
+	{ SCPI_CMD_SET_OVER_VOLTAGE_PROTECTION_THRESHOLD, "OVSET %.4f" },
+	ALL_ZERO
 };
 
 static const struct scpi_command hp_6632b_cmd[] = {
@@ -326,7 +359,7 @@ static const struct scpi_command hp_6632b_cmd[] = {
 
 /* Philips/Fluke PM2800 series */
 static const uint32_t philips_pm2800_devopts[] = {
-	SR_CONF_CONTINUOUS | SR_CONF_SET,
+	SR_CONF_CONTINUOUS,
 };
 
 static const uint32_t philips_pm2800_devopts_cg[] = {
@@ -472,12 +505,21 @@ static const struct scpi_command philips_pm2800_cmd[] = {
 };
 
 SR_PRIV const struct scpi_pps pps_profiles[] = {
+	/* Agilent N5763A */
+	{ "Agilent", "N5763A", 0,
+		ARRAY_AND_SIZE(agilent_n5700a_devopts),
+		ARRAY_AND_SIZE(agilent_n5700a_devopts_cg),
+		ARRAY_AND_SIZE(agilent_n5763a_ch),
+		ARRAY_AND_SIZE(agilent_n5700a_cg),
+		agilent_n5700a_cmd,
+		.probe_channels = NULL,
+	},
 	/* Agilent N5767A */
 	{ "Agilent", "N5767A", 0,
 		ARRAY_AND_SIZE(agilent_n5700a_devopts),
 		ARRAY_AND_SIZE(agilent_n5700a_devopts_cg),
 		ARRAY_AND_SIZE(agilent_n5767a_ch),
-		ARRAY_AND_SIZE(agilent_n5767a_cg),
+		ARRAY_AND_SIZE(agilent_n5700a_cg),
 		agilent_n5700a_cmd,
 		.probe_channels = NULL,
 	},
@@ -499,12 +541,22 @@ SR_PRIV const struct scpi_pps pps_profiles[] = {
 		chroma_62000_cmd,
 		.probe_channels = chroma_62000p_probe_channels,
 	},
+	/* HP 6633A */
+	{ "HP", "6633A", 0,
+		ARRAY_AND_SIZE(hp_6630a_devopts),
+		ARRAY_AND_SIZE(devopts_none),
+		ARRAY_AND_SIZE(hp_6633a_ch),
+		ARRAY_AND_SIZE(hp_663xx_cg),
+		hp_6630a_cmd,
+		.probe_channels = NULL,
+	},
+
 	/* HP 6632B */
 	{ "HP", "6632B", 0,
 		ARRAY_AND_SIZE(hp_6632b_devopts),
 		ARRAY_AND_SIZE(devopts_none),
 		ARRAY_AND_SIZE(hp_6632b_ch),
-		ARRAY_AND_SIZE(hp_6632b_cg),
+		ARRAY_AND_SIZE(hp_663xx_cg),
 		hp_6632b_cmd,
 		.probe_channels = NULL,
 	},
