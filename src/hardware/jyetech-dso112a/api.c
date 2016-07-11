@@ -79,7 +79,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         devc = g_malloc0(sizeof(struct dev_context));
-        if (!jyetech_dso112a_parse_query(serial, devc)) {
+        if (jyetech_dso112a_parse_query(serial, devc) != SR_OK) {
                 /* Not mine, let it go */
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
@@ -88,9 +88,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         /* Ours, so tell everyone about it */
-        sr_info("Found device on port %s.", conn);
-        sdi= g_malloc0(sizeof(struct sr_dev_inst));
         serial_close(serial);
+        sr_info("Found device on port %s.", conn);
+        sdi = g_malloc0(sizeof(struct sr_dev_inst));
         sdi->status = SR_ST_INACTIVE;
         sdi->vendor = g_strdup("JYETech");
         sdi->model = devc->description;

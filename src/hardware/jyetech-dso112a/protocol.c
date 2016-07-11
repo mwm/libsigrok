@@ -18,35 +18,35 @@
  */
 
 #include <config.h>
+#include <string.h>
 #include "protocol.h"
 
 #define SYNC 0xFE
 // Let IO time out in 1 second for now.
 #define TIMEOUT 1000
-
-struct frame {
-        uint8_t ID;
-        uint16_t size;
-        uint8_t data[];
-};
-
+                
 static uint8_t *read_packet(struct sr_serial_dev_inst *port) {
         uint8_t c;
         uint16_t frame_size;
         uint8_t header[3];
-        struct frame *frame = (struct frame *) header;
+        uint8_t *ret;
 
         if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1
             || c != SYNC 
             || serial_read_blocking(port, header, 3, TIMEOUT) != 3)
                 return NULL;
+                
         frame_size = header[1] + 256 * header[2];
-        sr_spew("Frame @0x%x size of %0x%x, data @0x%x computes to %0x%x\n",
-                frame, frame->size, header, frame_size);
-        return NULL;
+        ret = g_malloc(frame_size);
+        memcpy(ret, header, 3);
+        if (serial_read_blocking(port, ret + 3, frame_size - 3, TIMEOUT) !=
+            frame_size - 3) {
+                g_free(ret);
+                return NULL;
+        }
+        return ret;
 }
-        
-        
+                
 
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 {
@@ -86,17 +86,33 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
  *	command type.  All of these frame have no other data.
  */ 
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
-                                         unsigned char ID, unsigned char extra) {
-        static unsigned char command[5] = {254, 0, 4, 0, 0} ;
+                                         uint8_t ID, uint8_t extra) {
+        static uint8_t command[5] = {254, 0, 4, 0, 0} ;
         command[1] = ID;
         command[4] = extra;
+        
         return serial_write_blocking(port, command, 5, TIMEOUT) == 5;
 }
 
 SR_PRIV int jyetech_dso112a_parse_query(struct sr_serial_dev_inst *port,
                                         struct dev_context *device) {
+        uint8_t *packet;
         (void) device;
-        read_packet(port);
-        return FALSE;
+        int ret;
+
+        packet = read_packet(port);
+        if (!packet)
+                return SR_ERR_IO;
+        if (packet[0] != 0xE2 || packet[3] != 'O') {
+                sr_spew("Packet id 0x%x not a query response, or device type %c not an oscilloscope", packet[0], packet[3]);
+                ret = SR_ERR_NA;
+        } else {
+                /* This is indeed a packet describing an oscilloscope */
+                device->type = packet[3];
+                device->description = g_strdup((char *) &packet[5]);
+                ret = SR_OK;
+        }
+        g_free(packet);
+        return ret;
 }
 

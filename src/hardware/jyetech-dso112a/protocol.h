@@ -28,7 +28,7 @@
 #define LOG_PREFIX "jyetech-dso112a"
 
 #define SERIALCOMM "115200/8n1/flow=0"
-#define SERIALCONN "/dev/cuaU0"
+#define SERIALCONN "/dev/ttyU0"
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
