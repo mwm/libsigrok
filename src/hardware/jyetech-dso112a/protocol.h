@@ -27,11 +27,17 @@
 
 #define LOG_PREFIX "jyetech-dso112a"
 
+#define SERIALCOMM "115200/8n1/flow=0"
+#define SERIALCONN "/dev/cuaU0"
+
 /** Private, per-device-instance driver context. */
 struct dev_context {
 	/* Model-specific information */
+        char type;
+        char *description;
 
 	/* Acquisition settings */
+        struct sr_serial_dev_inst *serial;
 
 	/* Operational state */
 
@@ -39,6 +45,10 @@ struct dev_context {
 
 };
 
+SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
+                                         uint8_t ID, uint8_t extra);
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
+SR_PRIV int jyetech_dso112a_parse_query(struct sr_serial_dev_inst *port,
+                                        struct dev_context *device);
 
 #endif

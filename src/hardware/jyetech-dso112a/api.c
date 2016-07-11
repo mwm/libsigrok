@@ -22,21 +22,83 @@
 
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info;
 
+static const uint32_t scanopts[] = {
+	SR_CONF_CONN,
+	SR_CONF_SERIALCOMM
+};
+
+static const uint32_t devopts[] = {
+	SR_CONF_OSCILLOSCOPE,
+	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
+	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+        SR_CONF_OUTPUT_FREQUENCY | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+};
+
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
-	struct drv_context *drvc;
-	GSList *devices;
+	struct sr_config *src;
+        const char *conn = NULL;
+        const char *serialcomm = NULL;
+        GSList *l;
+        struct sr_serial_dev_inst *serial;
+	struct dev_context *devc;
+        struct sr_dev_inst *sdi;
 
-	(void)options;
+	for (l = options; l; l = l->next) {
+		src = l->data;
+		switch (src->key) {
+		case SR_CONF_CONN:
+			conn = g_variant_get_string(src->data, NULL);
+			break;
+		case SR_CONF_SERIALCOMM:
+			serialcomm = g_variant_get_string(src->data, NULL);
+			break;
+		}
+	}
+	if (!conn)
+		conn = SERIALCONN;
+	if (!serialcomm)
+		serialcomm = SERIALCOMM;
 
-	devices = NULL;
-	drvc = di->context;
-	drvc->instances = NULL;
+	serial = sr_serial_dev_inst_new(conn, serialcomm);
+	if (serial_open(serial, SERIAL_RDWR) != SR_OK) {
+                return NULL;
+        }
 
-	/* TODO: scan for devices, either based on a SR_CONF_CONN option
-	 * or on a USB scan. */
+        /* Ask whatever's there what kind of jyetech device is is */
+        sr_info("Probing port %s.", conn);
+        if (!jyetech_dso112a_send_command(serial, 0xE0, 0x00)) {
+                serial_close(serial);
+                return NULL;
+        }
 
-	return devices;
+        devc = g_malloc0(sizeof(struct dev_context));
+        if (!jyetech_dso112a_parse_query(serial, devc)) {
+                /* Not mine, let it go */
+                serial_close(serial);
+                sr_serial_dev_inst_free(serial);
+                g_free(devc);
+                return NULL;
+        }
+
+        /* Ours, so tell everyone about it */
+        sr_info("Found device on port %s.", conn);
+        sdi= g_malloc0(sizeof(struct sr_dev_inst));
+        serial_close(serial);
+        sdi->status = SR_ST_INACTIVE;
+        sdi->vendor = g_strdup("JYETech");
+        sdi->model = devc->description;
+        sdi->inst_type = SR_INST_SERIAL;
+        sdi->conn = serial;
+        sdi->priv = devc;
+        sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
+        return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
 static int dev_clear(const struct sr_dev_driver *di)
@@ -109,20 +171,25 @@ static int config_set(uint32_t key, GVariant *data,
 static int config_list(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	int ret;
-
 	(void)sdi;
 	(void)data;
 	(void)cg;
 
-	ret = SR_OK;
 	switch (key) {
-	/* TODO */
+	case SR_CONF_SCAN_OPTIONS:
+                *data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+                                                  scanopts, ARRAY_SIZE(scanopts),
+                                                  sizeof(uint32_t));
+                return SR_OK;
+	case SR_CONF_DEVICE_OPTIONS:
+                *data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
+                                                  devopts,
+                                                  ARRAY_SIZE(devopts),
+                                                  sizeof(uint32_t));
+                return SR_OK;
 	default:
 		return SR_ERR_NA;
 	}
-
-	return ret;
 }
 
 static int dev_acquisition_start(const struct sr_dev_inst *sdi)

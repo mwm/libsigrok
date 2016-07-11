@@ -348,6 +348,12 @@ src_libdrivers_la_SOURCES += \
 	src/hardware/ikalogic-scanaplus/protocol.c \
 	src/hardware/ikalogic-scanaplus/api.c
 endif
+if HW_JYETECH_DSO112A
+src_libdrivers_la_SOURCES += \
+	src/hardware/jyetech-dso112a/protocol.h \
+	src/hardware/jyetech-dso112a/protocol.c \
+	src/hardware/jyetech-dso112a/api.c
+endif
 if HW_KECHENG_KC_330B
 src_libdrivers_la_SOURCES += \
 	src/hardware/kecheng-kc-330b/protocol.h \
