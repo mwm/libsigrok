@@ -170,7 +170,6 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 	if (!(sdi = cb_data) || !(devc = sdi->priv))
 		return TRUE;
         
-        sr_spew("Handling event") ;
         serial = sdi->conn;
 	if (revents == G_IO_IN) {
                 sr_spew("Reading frame");

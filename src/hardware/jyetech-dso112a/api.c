@@ -244,11 +244,11 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-        std_session_send_df_end(sdi);
-        serial_source_remove(sdi->session, sdi->conn);
         if ((devc = sdi->priv))
                 devc->acquiring = FALSE;
         jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA);
+        std_session_send_df_end(sdi);
+        serial_source_remove(sdi->session, sdi->conn);
         return SR_OK;
 }
 
