@@ -194,7 +194,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                 analog.num_samples = 1;
                         } else if (frame[3] == BULK_SAMPLE) {
                                 /* TODO */
-                                analog.num_samples = frame[4] + 256 * frame[5];
+                                analog.num_samples = frame[1] + 256 * frame[2] - 8;
                         } else {
                                 sr_dbg("Got 0xC0 frame type=0x%c while looking for sample.", frame[3]);
                         }
