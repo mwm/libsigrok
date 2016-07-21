@@ -167,16 +167,15 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 
 	(void)fd;
 
-	if (!(sdi = cb_data) || !(devc = sdi->priv) || !devc->acquiring)
+	if (!(sdi = cb_data) || !(devc = sdi->priv))
 		return TRUE;
         
-        serial = sdi->conn;
-                
         sr_spew("Handling event") ;
-	if (revents == G_IO_IN && devc->acquiring) {
+        serial = sdi->conn;
+	if (revents == G_IO_IN) {
                 sr_spew("Reading frame");
                 frame = jyetech_dso112a_read_frame(serial);
-                if (frame && frame[0] == SAMPLE_FRAME) {
+                if (devc->acquiring && frame && frame[0] == SAMPLE_FRAME) {
                         sr_spew("Got sample");
                         sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
                         encoding.unitsize = sizeof(uint8_t);
