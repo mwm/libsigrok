@@ -29,15 +29,16 @@ static const uint32_t scanopts[] = {
 
 static const uint32_t devopts[] = {
 	SR_CONF_OSCILLOSCOPE,
-	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+        SR_CONF_CONTINUOUS,
+	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
+	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
+	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
+	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
 	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
-	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-        SR_CONF_OUTPUT_FREQUENCY | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+        SR_CONF_OUTPUT_FREQUENCY | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
 };
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
@@ -49,6 +50,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         struct sr_serial_dev_inst *serial;
 	struct dev_context *devc;
         struct sr_dev_inst *sdi;
+        uint8_t *frame;
 
 	for (l = options; l; l = l->next) {
 		src = l->data;
@@ -61,39 +63,46 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			break;
 		}
 	}
-	if (!conn)
-		conn = SERIALCONN;
 	if (!serialcomm)
 		serialcomm = SERIALCOMM;
 
+        sr_info("Probing port %s.", conn);
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
 	if (serial_open(serial, SERIAL_RDWR) != SR_OK) {
+                sr_serial_dev_inst_free(serial);
                 return NULL;
         }
 
         /* Ask whatever's there what kind of jyetech device is is */
-        sr_info("Probing port %s.", conn);
-        if (!jyetech_dso112a_send_command(serial, 0xE0, 0x00)) {
+        if (!jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)) {
                 serial_close(serial);
+                sr_serial_dev_inst_free(serial);
                 return NULL;
         }
 
-        devc = g_malloc0(sizeof(struct dev_context));
-        if (jyetech_dso112a_parse_query(serial, devc) != SR_OK) {
+        frame = jyetech_dso112a_read_frame(serial);
+        if (!frame) {
+                serial_close(serial);
+                sr_serial_dev_inst_free(serial);
+                return NULL;
+        }
+                
+        devc = jyetech_dso112a_dev_context_new(frame);
+        g_free(frame);
+        if (!devc) {
                 /* Not mine, let it go */
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
-                g_free(devc);
                 return NULL;
         }
+        serial_close(serial);
 
         /* Ours, so tell everyone about it */
-        serial_close(serial);
         sr_info("Found device on port %s.", conn);
         sdi = g_malloc0(sizeof(struct sr_dev_inst));
         sdi->status = SR_ST_INACTIVE;
         sdi->vendor = g_strdup("JYETech");
-        sdi->model = devc->description;
+        sdi->model = g_strdup(devc->description);
         sdi->inst_type = SR_INST_SERIAL;
         sdi->conn = serial;
         sdi->priv = devc;
@@ -103,29 +112,34 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
 static int dev_clear(const struct sr_dev_driver *di)
 {
-	return std_dev_clear(di, NULL);
+	return std_dev_clear(di, jyetech_dso112a_dev_context_free);
 }
 
 static int dev_open(struct sr_dev_inst *sdi)
 {
-	(void)sdi;
+        int status;
+        struct sr_serial_dev_inst *serial;
 
-	/* TODO: get handle from sdi->conn and open it. */
+        if (sdi->status == SR_ST_ACTIVE)
+                return SR_ERR;
 
-	sdi->status = SR_ST_ACTIVE;
+        serial = sdi->conn;
+	sr_info("Opening device %s.", serial->port);
+        status = serial_open(serial, SERIAL_RDWR);
+        if (status != SR_OK)
+                return status;
 
+        sdi->status = SR_ST_ACTIVE;
 	return SR_OK;
 }
 
 static int dev_close(struct sr_dev_inst *sdi)
 {
-	(void)sdi;
-
-	/* TODO: get handle from sdi->conn and close it. */
+        struct sr_serial_dev_inst *serial = sdi->conn;
 
 	sdi->status = SR_ST_INACTIVE;
-
-	return SR_OK;
+	sr_info("Closing device %s.", serial->port);
+        return serial_close(serial);
 }
 
 static int config_get(uint32_t key, GVariant **data,
@@ -141,6 +155,7 @@ static int config_get(uint32_t key, GVariant **data,
 	switch (key) {
 	/* TODO */
 	default:
+                sr_err("Invalid config item 0x%x requested.", key);
 		return SR_ERR_NA;
 	}
 
@@ -162,6 +177,7 @@ static int config_set(uint32_t key, GVariant *data,
 	switch (key) {
 	/* TODO */
 	default:
+                sr_err("Tried to set invalid config item 0x%x.", key);
 		ret = SR_ERR_NA;
 	}
 
@@ -188,29 +204,50 @@ static int config_list(uint32_t key, GVariant **data,
                                                   sizeof(uint32_t));
                 return SR_OK;
 	default:
+                sr_err("Invalid config list 0x%x requested.", key);
 		return SR_ERR_NA;
 	}
 }
 
 static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
+        int status;
+        struct dev_context *devc;
+
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	/* TODO: configure hardware, reset acquisition state, set up
-	 * callbacks and send header packet. */
-
-	return SR_OK;
+        devc = sdi->priv;
+        devc->acquiring = TRUE;
+        status = serial_source_add(sdi->session, sdi->conn, G_IO_IN,
+                                   50, jyetech_dso112a_receive_data, (void *) sdi);
+        if (status == SR_OK) {
+                /* Users can change parameters on the scope, so get them */
+                status = jyetech_dso112a_get_parameters(sdi);
+                if (status == SR_OK) {
+                        status = std_session_send_df_header(sdi);
+                        if (status == SR_OK) {
+                                if (!jyetech_dso112a_send_command(sdi->conn,
+                                                                  COMMAND_START,
+                                                                  START_EXTRA))
+                                        status = SR_ERR_IO;
+                        }
+                }
+        }
+        return status;
 }
 
 static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
+        struct dev_context *devc;
+
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	/* TODO: stop acquisition. */
-
-	return SR_OK;
+        devc = sdi->priv;
+        devc->acquiring = FALSE;
+        jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA);
+        return std_session_send_df_end(sdi);
 }
 
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info = {
