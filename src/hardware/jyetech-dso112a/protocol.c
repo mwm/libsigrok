@@ -114,6 +114,7 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
         /* This is indeed a frame describing an oscilloscope */
         device = g_malloc0(sizeof(struct dev_context));
         device->type = frame[FRAME_EXTRA];
+        frame[GET_UNSIGNED(frame, FRAME_SIZE) - 1] = 0;
         device->description = g_strdup((char *) &frame[QUERY_NAME]);
         return device;
 }        
@@ -122,6 +123,8 @@ SR_PRIV void jyetech_dso112a_dev_context_free(void *p)
 {
         struct dev_context *devc = p;
 
+        if (devc->params)
+                g_free(devc->params);
         g_free(devc->description);
         g_free(devc);
 }
@@ -249,14 +252,17 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 
 	(void)fd;
 
-	if (!(sdi = cb_data) || !(devc = sdi->priv))
+        sr_spew("Handling event");
+	if (!(sdi = cb_data) || !(devc = sdi->priv) || !(serial = sdi->conn))
 		return TRUE;
 
-        serial = sdi->conn;
 	if (revents == G_IO_IN) {
                 sr_spew("Reading frame");
                 frame = jyetech_dso112a_read_frame(serial);
-                if (devc->acquiring && frame && frame[FRAME_ID] == SAMPLE_FRAME) {
+                if (!devc->acquiring) {
+                        jyetech_dso112a_send_command(
+                                serial, COMMAND_STOP, STOP_EXTRA); 
+                } else if (frame && frame[FRAME_ID] == SAMPLE_FRAME) {
                         sr_spew("Got sample");
                         sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
                         encoding.unitsize = sizeof(uint8_t);

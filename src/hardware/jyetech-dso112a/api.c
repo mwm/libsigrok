@@ -283,26 +283,33 @@ static int config_list(uint32_t key, GVariant **data,
 
 static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 {
-        int status;
+        int status = SR_ERR;
+        uint8_t *frame;
         struct dev_context *devc;
+        struct sr_serial_dev_inst *serial;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-        if (!(devc = sdi->priv))
+        if (!(devc = sdi->priv) || !(serial = sdi->conn))
                 return SR_ERR_ARG;
 
-        devc->acquiring = TRUE;
-        status = serial_source_add(sdi->session, sdi->conn, G_IO_IN,
-                                   50, jyetech_dso112a_receive_data, (void *) sdi);
-        if (status == SR_OK) {
-                status = std_session_send_df_header(sdi);
+        if (!jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
+            || !(frame = jyetech_dso112a_read_frame(serial)))
+                return SR_ERR_IO;
+
+        if (frame[FRAME_ID] == QUERY_RESPONSE && frame[FRAME_EXTRA] == devc->type
+            && !g_strcmp0((char *) &frame[QUERY_NAME], devc->description)) {
+                status = serial_source_add(
+                        sdi->session, sdi->conn, G_IO_IN, 50, 
+                        jyetech_dso112a_receive_data, (void *) sdi);
                 if (status == SR_OK) {
-                        if (!jyetech_dso112a_send_command(sdi->conn, COMMAND_START,
-                                                          START_EXTRA))
-                                status = SR_ERR_IO;
+                        status = std_session_send_df_header(sdi);
+                        if (status == SR_OK)
+                                devc->acquiring = TRUE;
                 }
         }
+        g_free(frame);
         return status;
 }
 
