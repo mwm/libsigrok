@@ -24,7 +24,7 @@
 // Let IO time out in 1 second for now.
 #define TIMEOUT 1000
                 
-static SR_PRIV int jyetech_dso112a_get_stuffed(struct sr_serial_dev_inst *port)
+static int jyetech_dso112a_get_stuffed(struct sr_serial_dev_inst *port)
 {
      uint8_t c;
      static uint8_t stuffing = 0;
@@ -74,9 +74,9 @@ SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port)
                   if (hi_byte >= 0) {
                        frame_size = lo_byte + 256 * hi_byte;
                        frame = g_malloc(frame_size);
-                       frame[0] = id;
-                       frame[1] = lo_byte;
-                       frame[2] = hi_byte;
+                       frame[FRAME_ID] = id;
+                       frame[FRAME_SIZE]     = lo_byte;
+                       frame[FRAME_SIZE + 1] = hi_byte;
                        for (i = 3; i < frame_size;) {
                             c = jyetech_dso112a_get_stuffed(port);
                             if (c < 0) {
@@ -105,15 +105,15 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
 {
         struct dev_context *device;
         
-        if (frame[0] != QUERY_RESPONSE || frame[3] != 'O') {
-                sr_spew("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[0], frame[3]);
+        if (frame[FRAME_ID] != QUERY_RESPONSE || frame[FRAME_EXTRA] != 'O') {
+                sr_spew("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[FRAME_ID], frame[FRAME_EXTRA]);
                 return NULL;
         }
                 
         /* This is indeed a frame describing an oscilloscope */
         device = g_malloc0(sizeof(struct dev_context));
-        device->type = frame[3];
-        device->description = g_strdup((char *) &frame[5]);
+        device->type = frame[FRAME_EXTRA];
+        device->description = g_strdup((char *) &frame[QUERY_NAME]);
         return device;
 }        
 
@@ -139,11 +139,11 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
         
         serial = sdi->conn;
         status = SR_ERR_IO;
-        if (jyetech_dso112a_send_command(serial, COMMAND_GET, PARAMETER_EXTRA)) {
+        if (jyetech_dso112a_send_command(serial, COMMAND_GET, PARAM_EXTRA)) {
                 frame = jyetech_dso112a_read_frame(serial);
                 if (frame) {
                         status = SR_OK;
-                        devc->vpos = frame[6] + 256 * frame[7];
+                        devc->vpos = frame[PARAM_VPOS] + 256 * frame[PARAM_VPOS];
                         sr_spew("Set VPos to %d", devc->vpos);
                         g_free(frame);
                 }
@@ -174,7 +174,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 	if (revents == G_IO_IN) {
                 sr_spew("Reading frame");
                 frame = jyetech_dso112a_read_frame(serial);
-                if (devc->acquiring && frame && frame[0] == SAMPLE_FRAME) {
+                if (devc->acquiring && frame && frame[FRAME_ID] == SAMPLE_FRAME) {
                         sr_spew("Got sample");
                         sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
                         encoding.unitsize = sizeof(uint8_t);
@@ -189,16 +189,18 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         analog.meaning->mq = SR_MQ_VOLTAGE;
                         analog.meaning->unit = SR_UNIT_VOLT;
                         analog.meaning->mqflags = 0;
-                        if (frame[3] == SINGLE_SAMPLE) {
+                        if (frame[FRAME_EXTRA] == SINGLE_SAMPLE) {
                                 /* TODO */
                                 analog.num_samples = 1;
-                        } else if (frame[3] == BULK_SAMPLE) {
+                        } else if (frame[FRAME_EXTRA] == BULK_SAMPLE) {
                                 /* TODO */
-                                analog.num_samples = frame[1] + 256 * frame[2] - 8;
+                                analog.num_samples = frame[FRAME_SIZE]
+                                     + 256 * frame[FRAME_SIZE + 1] - 8;
                         } else {
-                                sr_dbg("Got 0xC0 frame type=0x%c while looking for sample.", frame[3]);
+                                sr_dbg("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
                         }
-                        memcpy(devc->data, &frame[4], analog.num_samples);
+                        memcpy( devc->data, &frame[CAPTURE_DATA],
+                                analog.num_samples);
                         analog.data = &devc->data;
                         packet.type = SR_DF_ANALOG;
                         packet.payload = &analog;

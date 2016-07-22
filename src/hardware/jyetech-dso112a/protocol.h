@@ -28,6 +28,7 @@
 #define LOG_PREFIX "jyetech-dso112a"
 
 #define SERIALCOMM "115200/8n1/flow=0"
+#define SERIALCONN "/dev/ttyU0"
 
 /*
  * Serial protocol values
@@ -50,7 +51,7 @@
 
 #define COMMAND_GET	0xC0
 #define CONFIGURE_EXTRA	0x20
-#define PARAMETER_EXTRA	0x21
+#define PARAM_EXTRA	0x21
 #define GET_RESPONSE	0xC0
 #define CONF_RESP_EXTRA	0x30
 #define PARM_RESP_EXTRA	0x31
@@ -69,13 +70,33 @@
 #define COMMAND_SPECIAL	0xC0
 #define SPECIAL_EXTRA	0x24
 
-
-
 /* Frames sent back from the scope */
 #define QUERY_RESPONSE	0xE2
 #define SAMPLE_FRAME	0xC0
 #define SINGLE_SAMPLE	0x33
 #define BULK_SAMPLE	0x32
+
+/* Frame offsets */
+#define FRAME_ID	0
+#define FRAME_SIZE	1
+#define FRAME_EXTRA	3
+
+#define CAPTURE_DATA	4
+
+#define QUERY_NAME	5
+
+#define PARAM_VSEN	1
+#define PARAM_CPL	2
+#define PARAM_VPOS	6
+#define PARAM_TIMEBASE	12
+#define PARAM_TRIGMODE	16
+#define PARAM_TRIGSLOPE	17
+#define PARAM_TRIGLVL	18
+#define PARAM_TRIGPOS	19
+#define PARAM_TRIGSRC	20
+#define PARAM_MEASURE	23
+#define PARAM_RECLEN	24
+
 
 /** Private, per-device-instance driver context. */
 struct dev_context {
@@ -85,15 +106,14 @@ struct dev_context {
 
 	/* Acquisition settings */
         int16_t vpos ;
+        uint8_t timebase;
         struct sr_serial_dev_inst *serial;
 
 	/* Operational state */
         gboolean acquiring;
-        uint8_t parameters[33];
         uint8_t data[1024];
 
 	/* Temporary state across callbacks */
-
 };
 
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
