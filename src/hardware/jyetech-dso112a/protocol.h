@@ -105,8 +105,7 @@ struct dev_context {
         char *description;
 
 	/* Acquisition settings */
-        int16_t vpos ;
-        uint8_t timebase;
+        uint8_t *params;
         struct sr_serial_dev_inst *serial;
 
 	/* Operational state */
@@ -116,10 +115,17 @@ struct dev_context {
 	/* Temporary state across callbacks */
 };
 
+#define GET_UNSIGNED(_frame, _pos) ((_frame)[_pos] + 256 * (_frame)[(_pos) + 1])
+#define GET_SIGNED(_frame, _pos) ((int16_t) GET_UNSIGNED(_frame, _pos))
+#define PUT_WORD(_value, _frame, _pos) \
+        ((_frame)[_pos] = _value & 0xFF, \
+         (_frame)[(_pos) + 1] = ((_value) >> 8) & 0xFF)
+
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
                                          uint8_t ID, uint8_t extra);
 SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *serial);
+SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *serial);
 SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port);
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *packet);
 SR_PRIV void jyetech_dso112a_dev_context_free(void *p);

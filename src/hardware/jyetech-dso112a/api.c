@@ -30,7 +30,7 @@ static const uint32_t scanopts[] = {
 static const uint32_t devopts[] = {
 	SR_CONF_OSCILLOSCOPE,
         SR_CONF_CONTINUOUS,
-	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
+	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
 	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
 	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
@@ -39,6 +39,36 @@ static const uint32_t devopts[] = {
 	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
         SR_CONF_OUTPUT_FREQUENCY | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+};
+
+static const uint64_t timebases[][2] = {
+	/* microseconds */
+        { 1, 1000000 },		/* VSen = 30 */
+	{ 2, 1000000 },
+	{ 5, 1000000 },
+	{ 10, 1000000 },
+	{ 20, 1000000 },
+	{ 50, 1000000 },
+	{ 100, 1000000 },
+	{ 200, 1000000 },
+	{ 500, 1000000 },
+	/* milliseconds */
+	{ 1, 1000 },
+	{ 2, 1000 },
+	{ 5, 1000 },
+	{ 10, 1000 },
+	{ 20, 1000 },
+	{ 50, 1000 },
+	{ 100, 1000 },
+	{ 200, 1000 },
+	{ 500, 1000 },
+	/* seconds */
+	{ 1, 1 },
+	{ 2, 1 },
+	{ 5, 1 },
+	{ 10, 1 },
+	{ 20, 1 },
+	{ 50, 1 },	/* VSen = 7 */
 };
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
@@ -65,6 +95,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	}
 	if (!serialcomm)
 		serialcomm = SERIALCOMM;
+
+        if (!conn)
+                conn = SERIALCONN;
 
         sr_info("Probing port %s.", conn);
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
@@ -106,7 +139,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         sdi->inst_type = SR_INST_SERIAL;
         sdi->conn = serial;
         sdi->priv = devc;
-        sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "P1");
+        sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "CH1");
         return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
@@ -119,25 +152,32 @@ static int dev_open(struct sr_dev_inst *sdi)
 {
         int status;
         struct sr_serial_dev_inst *serial;
+        struct dev_context *devc;
 
-        if (sdi->status == SR_ST_ACTIVE)
+        if (!(devc = sdi->priv))
                 return SR_ERR;
 
         serial = sdi->conn;
 	sr_info("Opening device %s.", serial->port);
         status = serial_open(serial, SERIAL_RDWR);
-        if (status != SR_OK)
-                return status;
-
-        sdi->status = SR_ST_ACTIVE;
-	return SR_OK;
+        if (status == SR_OK) {
+                status = jyetech_dso112a_get_parameters(sdi);
+                if (status != SR_OK) {
+                        serial_close(serial);
+                } else {
+                        sdi->status = SR_ST_ACTIVE;
+                }
+        }
+        return status;
 }
 
 static int dev_close(struct sr_dev_inst *sdi)
 {
         struct sr_serial_dev_inst *serial = sdi->conn;
 
-	sdi->status = SR_ST_INACTIVE;
+	if (sdi->status != SR_ST_ACTIVE)
+		return SR_ERR_DEV_CLOSED;
+
 	sr_info("Closing device %s.", serial->port);
         return serial_close(serial);
 }
@@ -145,43 +185,73 @@ static int dev_close(struct sr_dev_inst *sdi)
 static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	int ret;
+        struct dev_context *devc;
+        int timebase;
 
-	(void)sdi;
-	(void)data;
 	(void)cg;
 
-	ret = SR_OK;
+        if (!(devc = sdi->priv))
+                return SR_ERR_ARG;
+        timebase = devc->params[PARAM_TIMEBASE];
+
 	switch (key) {
-	/* TODO */
+        case SR_CONF_TIMEBASE:
+                *data = g_variant_new("(tt)", timebases[30 - timebase][0],
+                                      timebases[30 - timebase][1]);
+                return SR_OK;
 	default:
                 sr_err("Invalid config item 0x%x requested.", key);
 		return SR_ERR_NA;
 	}
-
-	return ret;
 }
 
-static int config_set(uint32_t key, GVariant *data,
-	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
+static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sdi,
+                      const struct sr_channel_group *cg)
 {
-	int ret;
-
-	(void)data;
-	(void)cg;
+        unsigned i;
+        uint64_t p, q;
+        struct dev_context *devc;
+        (void)cg;
 
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-	ret = SR_OK;
+        if (!(devc = sdi->priv))
+                return SR_ERR_ARG;
+
 	switch (key) {
-	/* TODO */
+        case SR_CONF_TIMEBASE:
+                g_variant_get(data, "(tt)", &p, &q);
+                for (i = 0; i < ARRAY_SIZE(timebases); i++) {
+                        if (timebases[i][0] == p && timebases[i][1] == q) {
+                                devc->params[PARAM_TIMEBASE] = 30 - i;
+                                jyetech_dso112a_set_parameters(sdi);
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
 	default:
                 sr_err("Tried to set invalid config item 0x%x.", key);
-		ret = SR_ERR_NA;
+		return SR_ERR_NA;
+	}
+}
+
+static GVariant *build_tuples(const uint64_t (*array)[][2], unsigned int n)
+{
+	unsigned int i;
+	GVariant *rational[2];
+	GVariantBuilder gvb;
+
+	g_variant_builder_init(&gvb, G_VARIANT_TYPE_ARRAY);
+
+	for (i = 0; i < n; i++) {
+		rational[0] = g_variant_new_uint64((*array)[i][0]);
+		rational[1] = g_variant_new_uint64((*array)[i][1]);
+		g_variant_builder_add_value(
+                        &gvb, g_variant_new_tuple(rational, 2));
 	}
 
-	return ret;
+	return g_variant_builder_end(&gvb);
 }
 
 static int config_list(uint32_t key, GVariant **data,
@@ -199,9 +269,11 @@ static int config_list(uint32_t key, GVariant **data,
                 return SR_OK;
 	case SR_CONF_DEVICE_OPTIONS:
                 *data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-                                                  devopts,
-                                                  ARRAY_SIZE(devopts),
+                                                  devopts, ARRAY_SIZE(devopts),
                                                   sizeof(uint32_t));
+                return SR_OK;
+        case SR_CONF_TIMEBASE:
+                *data = build_tuples(&timebases, ARRAY_SIZE(timebases));
                 return SR_OK;
 	default:
                 sr_err("Invalid config list 0x%x requested.", key);
@@ -217,21 +289,18 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 	if (sdi->status != SR_ST_ACTIVE)
 		return SR_ERR_DEV_CLOSED;
 
-        devc = sdi->priv;
+        if (!(devc = sdi->priv))
+                return SR_ERR_ARG;
+
         devc->acquiring = TRUE;
         status = serial_source_add(sdi->session, sdi->conn, G_IO_IN,
                                    50, jyetech_dso112a_receive_data, (void *) sdi);
         if (status == SR_OK) {
-                /* Users can change parameters on the scope, so get them */
-                status = jyetech_dso112a_get_parameters(sdi);
+                status = std_session_send_df_header(sdi);
                 if (status == SR_OK) {
-                        status = std_session_send_df_header(sdi);
-                        if (status == SR_OK) {
-                                if (!jyetech_dso112a_send_command(sdi->conn,
-                                                                  COMMAND_START,
-                                                                  START_EXTRA))
-                                        status = SR_ERR_IO;
-                        }
+                        if (!jyetech_dso112a_send_command(sdi->conn, COMMAND_START,
+                                                          START_EXTRA))
+                                status = SR_ERR_IO;
                 }
         }
         return status;
@@ -246,7 +315,7 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 
         if ((devc = sdi->priv))
                 devc->acquiring = FALSE;
-        jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA);
+        jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA); 
         std_session_send_df_end(sdi);
         serial_source_remove(sdi->session, sdi->conn);
         return SR_OK;
