@@ -27,8 +27,11 @@ static const uint32_t scanopts[] = {
 	SR_CONF_SERIALCOMM
 };
 
-static const uint32_t devopts[] = {
+static const uint32_t drvopts[] = {
 	SR_CONF_OSCILLOSCOPE,
+};
+
+static const uint32_t devopts[] = {
         SR_CONF_CONTINUOUS | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
@@ -37,7 +40,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
-//	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
 static const uint64_t timebases[][2] = {
@@ -88,15 +91,15 @@ static const uint64_t vdivs[][2] = {
 	{ 20, 1 },	/* VSen = 3 */
 };
 
-static uint64_t buffersizes[] = {512, 1024};
+static const uint64_t buffersizes[] = {512, 1024};
 
 static const char *couplings[] = {"DC", "AC", "GND"};
         
 static const char *sources[] = {"INT", "EXT"};
 
-static const char *slopes[] = {"f", "r"};
+static const char *slopes[] = {"Neg", "Pos"};
 
-static const char *poss[] = {"1/8", "1/4", "1/2", "3/4", "7/8"};
+static const double poss[] = {0.125, 0.25, 0.5, 0.75, 0.875};
         
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
@@ -135,19 +138,13 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         /* Ask whatever's there what kind of jyetech device is is */
-        if (!jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)) {
+        if (!jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)
+            || !(frame = jyetech_dso112a_read_frame(serial))) {
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
                 return NULL;
         }
 
-        frame = jyetech_dso112a_read_frame(serial);
-        if (!frame) {
-                serial_close(serial);
-                sr_serial_dev_inst_free(serial);
-                return NULL;
-        }
-                
         devc = jyetech_dso112a_dev_context_new(frame);
         g_free(frame);
         if (!devc) {
@@ -255,7 +252,7 @@ static int config_get(uint32_t key, GVariant **data,
                 *data = g_variant_new_double(GINT16_FROM_LE(*signed_p) * 0.04);
                 return SR_OK;
         case SR_CONF_HORIZ_TRIGGERPOS:
-                *data = g_variant_new_string(poss[devc->params[PARAM_TRIGPOS]]);
+                *data = g_variant_new_double(poss[devc->params[PARAM_TRIGPOS]]);
                 return SR_OK;
 	default:
                 sr_err("Invalid config item 0x%x requested.", key);
@@ -348,9 +345,9 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
                 *signed_p = GINT32_TO_LE((int32_t) lvl);
                 return SR_OK;
         case SR_CONF_HORIZ_TRIGGERPOS:
-                string = g_variant_get_string(data, NULL);
+                lvl = g_variant_get_double(data);
                 for (i = 0; i < ARRAY_SIZE(poss); i += 1) {
-                        if (!g_strcmp0(poss[i], string)) {
+                        if (lvl == poss[i]) {
                                 devc->params[PARAM_TRIGPOS] = i;
                                 return SR_OK;
                         }
@@ -383,7 +380,6 @@ static GVariant *build_tuples(const uint64_t (*array)[][2], unsigned int n)
 static int config_list(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
-	(void)sdi;
 	(void)data;
 	(void)cg;
 
@@ -394,9 +390,13 @@ static int config_list(uint32_t key, GVariant **data,
                                                   sizeof(uint32_t));
                 return SR_OK;
 	case SR_CONF_DEVICE_OPTIONS:
-                *data = g_variant_new_fixed_array(G_VARIANT_TYPE_UINT32,
-                                                  devopts, ARRAY_SIZE(devopts),
-                                                  sizeof(uint32_t));
+                *data = sdi
+                        ? g_variant_new_fixed_array(
+                                G_VARIANT_TYPE_UINT32, devopts,
+                                ARRAY_SIZE(devopts), sizeof(uint32_t))
+                        : g_variant_new_fixed_array(
+                                G_VARIANT_TYPE_UINT32, drvopts,
+                                ARRAY_SIZE(drvopts), sizeof(uint32_t));
                 return SR_OK;
         case SR_CONF_TIMEBASE:
                 *data = build_tuples(&timebases, ARRAY_SIZE(timebases));
@@ -419,7 +419,9 @@ static int config_list(uint32_t key, GVariant **data,
                 *data = g_variant_new_strv(slopes, ARRAY_SIZE(slopes));
                 return SR_OK;
         case SR_CONF_HORIZ_TRIGGERPOS:
-                *data = g_variant_new_strv(slopes, ARRAY_SIZE(slopes));
+                *data = g_variant_new_fixed_array(G_VARIANT_TYPE_DOUBLE,
+                                                  poss, ARRAY_SIZE(poss),
+                                                  sizeof(double));
                 return SR_OK;
 	default:
                 sr_err("Invalid config list 0x%x requested.", key);
