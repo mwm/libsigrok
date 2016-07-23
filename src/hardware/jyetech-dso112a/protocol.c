@@ -108,11 +108,11 @@ static int jyetech_dso112a_send_frame(
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
                                          uint8_t ID, uint8_t extra)
 {
-        static uint8_t command[5] = {254, 0, 4, 0, 0} ;
-        command[1] = ID;
-        command[4] = extra;
+        static uint8_t command[5] = {0, 4, 0, 0} ;
+        command[0] = ID;
+        command[3] = extra;
         
-        return serial_write_blocking(port, command, 5, TIMEOUT) == 5;
+        return jyetech_dso112a_send_frame(port, command);
 }
 
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
@@ -157,7 +157,8 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
         serial = sdi->conn;
         status = SR_ERR_IO;
         sr_spew("getting parameters");
-        if (jyetech_dso112a_send_command(serial, COMMAND_GET, PARAM_EXTRA)) {
+        if (jyetech_dso112a_send_command(serial, COMMAND_GET, PARAM_EXTRA)
+            == SR_OK) {
                 frame = jyetech_dso112a_read_frame(serial);
                 if (frame) {
                         if (frame[FRAME_ID] == GET_RESPONSE 

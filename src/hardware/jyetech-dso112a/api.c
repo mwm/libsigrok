@@ -138,7 +138,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         /* Ask whatever's there what kind of jyetech device is is */
-        if (!jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)
+        if (jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)
+            != SR_OK
             || !(frame = jyetech_dso112a_read_frame(serial))) {
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
@@ -164,6 +165,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         sdi->inst_type = SR_INST_SERIAL;
         sdi->conn = serial;
         sdi->priv = devc;
+        sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "Int");
         return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
@@ -443,8 +445,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
                 return SR_ERR_ARG;
         
         
-        if (!jyetech_dso112a_set_parameters(sdi)
-            || !jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
+        if (jyetech_dso112a_set_parameters(sdi) != SR_OK
+            || jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
+               != SR_OK
             || !(frame = jyetech_dso112a_read_frame(serial)))
                 return SR_ERR_IO;
 
