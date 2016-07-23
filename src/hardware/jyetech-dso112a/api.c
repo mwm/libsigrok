@@ -240,7 +240,7 @@ static int config_get(uint32_t key, GVariant **data,
                 return SR_OK;
         case SR_CONF_TRIGGER_SOURCE:
                 *data = g_variant_new_string(
-                        sources[devc->params[PARAM_TRIGSRC] ? 2 : 0]);
+                        sources[devc->params[PARAM_TRIGSRC] == 2]);
                 return SR_OK;
         case SR_CONF_TRIGGER_SLOPE:
                 *data = g_variant_new_string(

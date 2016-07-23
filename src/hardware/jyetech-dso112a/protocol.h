@@ -92,10 +92,11 @@
 #define PARAM_TRIGMODE	16
 #define PARAM_TRIGSLOPE	17
 #define PARAM_TRIGLVL	18
-#define PARAM_TRIGPOS	19
-#define PARAM_TRIGSRC	20
+#define PARAM_TRIGPOS	20
+#define PARAM_TRIGSRC	21
 #define PARAM_MEASURE	23
 #define PARAM_RECLEN	24
+#define PARAM_HPOS	30
 
 
 /** Private, per-device-instance driver context. */
