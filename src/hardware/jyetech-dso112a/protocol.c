@@ -92,6 +92,19 @@ SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port)
         return NULL;
 }
 
+static int jyetech_dso112a_send_frame(
+     struct sr_serial_dev_inst *serial, uint8_t *frame)
+{
+        int8_t sync = SYNC;
+
+        uint16_t size = GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]);
+
+        if (serial_write_blocking(serial, &sync, 1, TIMEOUT) == 1
+            && serial_write_blocking(serial, frame, size, TIMEOUT) == size)
+                return SR_OK;
+        return SR_ERR_IO;
+}
+
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
                                          uint8_t ID, uint8_t extra)
 {
@@ -114,7 +127,7 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
         /* This is indeed a frame describing an oscilloscope */
         device = g_malloc0(sizeof(struct dev_context));
         device->type = frame[FRAME_EXTRA];
-        frame[GET_UNSIGNED(frame, FRAME_SIZE) - 1] = 0;
+        frame[GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]) - 1] = 0;
         device->description = g_strdup((char *) &frame[QUERY_NAME]);
         return device;
 }        
@@ -165,62 +178,6 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
 }
 
 
-/* static int jyetech_dso112a_handle_sample( */
-/*         uint8_t *frame, struct sr_dev_inst *sdi, struct dev_context *devc) */
-/* { */
-
-/*         int status; */
-/*         struct sr_datafeed_packet packet; */
-/*         struct sr_datafeed_analog analog; */
-/*         struct sr_analog_encoding encoding; */
-/*         struct sr_analog_meaning meaning; */
-/*         struct sr_analog_spec spec; */
-
-/*         sr_spew("Got sample"); */
-/*         sr_analog_init(&analog, &encoding, &meaning, &spec, 0); */
-/*         encoding.unitsize = sizeof(uint8_t); */
-/*         encoding.is_signed = FALSE; */
-/*         encoding.is_float = FALSE; */
-/*         /\* WARNING!!! These values assume 1volt/div setting on scope!!! *\/ */
-/*         encoding.scale.p = 1; */
-/*         encoding.scale.q = 25; */
-/*         encoding.offset.p = -(GET_SIGNED(devc->params, PARAM_VPOS) + 128); */
-/*         encoding.offset.q = 25; */
-/*         if (frame[FRAME_EXTRA] == SINGLE_SAMPLE) { */
-/*                 analog.num_samples = 1; */
-/*         } else if (frame[FRAME_EXTRA] == BULK_SAMPLE) { */
-/*                 analog.num_samples = GET_UNSIGNED(frame, FRAME_SIZE) - 8; */
-/*         } else { */
-/*                 sr_dbg("Got 0xC0 frame type=0x%c while looking for sample.", */
-/*                        frame[FRAME_EXTRA]); */
-/*                 return SR_ERR; */
-/*         } */
-/*         memcpy(devc->data, &frame[CAPTURE_DATA], analog.num_samples); */
-/*         analog.data = &devc->data; */
-/*         analog.meaning->channels = g_slist_copy(sdi->channels); */
-/*         analog.meaning->mq = SR_MQ_VOLTAGE; */
-/*         analog.meaning->unit = SR_UNIT_VOLT; */
-/*         analog.meaning->mqflags = 0; */
-/*         packet.type = SR_DF_ANALOG; */
-/*         packet.payload = &analog; */
-/*         status = sr_session_send(sdi, &packet); */
-/*         g_slist_free(analog.meaning->channels); */
-/*         return status; */
-/* } */
-
-static int jyetech_dso112a_send_frame(
-     struct sr_serial_dev_inst *serial, uint8_t *frame)
-{
-        int8_t sync = SYNC;
-
-        uint16_t size = GET_UNSIGNED(frame, FRAME_SIZE);
-
-        if (serial_write_blocking(serial, &sync, 1, TIMEOUT) == 1
-            && serial_write_blocking(serial, frame, size, TIMEOUT) == size)
-                return SR_OK;
-        return SR_ERR_IO;
-}
-
 SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *sdi)
 {
         uint8_t *frame;
@@ -234,6 +191,8 @@ SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *sdi)
                 
         frame[FRAME_ID] = COMMAND_SET;
         frame[FRAME_EXTRA] = SET_EXTRA;
+        /* Force auto-trigger mode to make sure we are getting data */
+        frame[PARAM_TRIGMODE] = 0;
         return jyetech_dso112a_send_frame(sdi->conn, frame);
 }
                         
@@ -272,13 +231,14 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         encoding.scale.p = 1;
                         encoding.scale.q = 25;
                         encoding.offset.p =
-                             -(GET_SIGNED(devc->params, PARAM_VPOS) + 128);
+                                -(GINT16_FROM_LE(*(int16_t *)
+                                                 &devc->params[PARAM_VPOS]) + 128);
                         encoding.offset.q = 25;
                         if (frame[FRAME_EXTRA] == SINGLE_SAMPLE) {
                                 analog.num_samples = 1;
                         } else if (frame[FRAME_EXTRA] == BULK_SAMPLE) {
-                                analog.num_samples = 
-                                     GET_UNSIGNED(frame, FRAME_SIZE) - 8;
+                                analog.num_samples = GUINT16_FROM_LE(
+                                        *(uint16_t *) &frame[FRAME_SIZE]) - 8;
                         } else {
                                 sr_err("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
                                 return SR_ERR;

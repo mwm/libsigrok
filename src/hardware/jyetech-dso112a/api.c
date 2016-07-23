@@ -29,21 +29,20 @@ static const uint32_t scanopts[] = {
 
 static const uint32_t devopts[] = {
 	SR_CONF_OSCILLOSCOPE,
-        SR_CONF_CONTINUOUS,
+        SR_CONF_CONTINUOUS | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
-	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
-	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
-	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET ,//| SR_CONF_LIST,
-	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
-	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_COUPLING | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
+	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
-	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
-        SR_CONF_OUTPUT_FREQUENCY | SR_CONF_GET | SR_CONF_SET,// | SR_CONF_LIST,
+//	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
 static const uint64_t timebases[][2] = {
 	/* microseconds */
-        { 1, 1000000 },		/* VSen = 30 */
+        { 1, 1000000 },		/* Timebase = 30 */
 	{ 2, 1000000 },
 	{ 5, 1000000 },
 	{ 10, 1000000 },
@@ -68,8 +67,37 @@ static const uint64_t timebases[][2] = {
 	{ 5, 1 },
 	{ 10, 1 },
 	{ 20, 1 },
-	{ 50, 1 },	/* VSen = 7 */
+	{ 50, 1 },	/* Timebase = 7 */
 };
+
+static const uint64_t vdivs[][2] = {
+        /* millivolts */
+	{ 2, 1000 },	/* VSen = 15 */
+	{ 5, 1000 },
+	{ 10, 1000 },
+	{ 20, 1000 },
+	{ 50, 1000 },
+	{ 100, 1000 },
+	{ 200, 1000 },
+	{ 500, 1000 },
+	/* volts */
+	{ 1, 1 },
+	{ 2, 1 },
+	{ 5, 1 },
+	{ 10, 1 },
+	{ 20, 1 },	/* VSen = 3 */
+};
+
+static uint64_t buffersizes[] = {512, 1024};
+
+static const char *couplings[] = {"DC", "AC", "GND"};
+        
+static const char *sources[] = {"INT", "EXT"};
+
+static const char *slopes[] = {"f", "r"};
+
+static const char *poss[] = {"1/8", "1/4", "1/2", "3/4", "7/8"};
+        
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -139,7 +167,6 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         sdi->inst_type = SR_INST_SERIAL;
         sdi->conn = serial;
         sdi->priv = devc;
-        sr_channel_new(sdi, 0, SR_CHANNEL_ANALOG, TRUE, "CH1");
         return std_scan_complete(di, g_slist_append(NULL, sdi));
 }
 
@@ -185,19 +212,50 @@ static int dev_close(struct sr_dev_inst *sdi)
 static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
 {
+        uint32_t *long_p;
+        int32_t *signed_p;
         struct dev_context *devc;
-        int timebase;
+        int value;
 
 	(void)cg;
 
         if (!(devc = sdi->priv))
                 return SR_ERR_ARG;
-        timebase = devc->params[PARAM_TIMEBASE];
-
 	switch (key) {
+        case SR_CONF_CONTINUOUS:
+                *data = g_variant_new_boolean(devc->params[PARAM_TRIGMODE] != 2);
+                return SR_OK;
         case SR_CONF_TIMEBASE:
-                *data = g_variant_new("(tt)", timebases[30 - timebase][0],
-                                      timebases[30 - timebase][1]);
+                value = 30 - devc->params[PARAM_TIMEBASE];
+                *data = g_variant_new("(tt)", timebases[value][0], 
+                                      timebases[value][1]);
+                return SR_OK;
+        case SR_CONF_VDIV:
+                value = 15 - devc->params[PARAM_VSEN];
+                *data = g_variant_new("(tt)", vdivs[value][0], vdivs[value][1]);
+                return SR_OK;
+        case SR_CONF_BUFFERSIZE:
+                long_p = (uint32_t *)&devc->params[PARAM_RECLEN];
+                *data = g_variant_new_uint64(GUINT32_FROM_LE(*long_p));
+                return SR_OK;
+        case SR_CONF_COUPLING:
+                *data = g_variant_new_string(couplings[devc->params[PARAM_CPL]]);
+                return SR_OK;
+        case SR_CONF_TRIGGER_SOURCE:
+                *data = g_variant_new_string(
+                        sources[devc->params[PARAM_TRIGSRC] ? 2 : 0]);
+                return SR_OK;
+        case SR_CONF_TRIGGER_SLOPE:
+                *data = g_variant_new_string(
+                        slopes[devc->params[PARAM_TRIGSLOPE]]);
+                return SR_OK;
+        case SR_CONF_TRIGGER_LEVEL:
+                signed_p = (int32_t *) &devc->params[PARAM_TRIGLVL];
+                /* In LSB's? Probably needs fixing */
+                *data = g_variant_new_double(GINT16_FROM_LE(*signed_p) * 0.04);
+                return SR_OK;
+        case SR_CONF_HORIZ_TRIGGERPOS:
+                *data = g_variant_new_string(poss[devc->params[PARAM_TRIGPOS]]);
                 return SR_OK;
 	default:
                 sr_err("Invalid config item 0x%x requested.", key);
@@ -210,6 +268,10 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
 {
         unsigned i;
         uint64_t p, q;
+        uint32_t *long_p;
+        int32_t *signed_p;
+        double lvl;
+        const char *string;
         struct dev_context *devc;
         (void)cg;
 
@@ -220,12 +282,76 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
                 return SR_ERR_ARG;
 
 	switch (key) {
+        case SR_CONF_CONTINUOUS:
+                devc->params[PARAM_TRIGMODE] = g_variant_get_boolean(data)
+                        ? 0 : 2;
+                return SR_OK;
         case SR_CONF_TIMEBASE:
                 g_variant_get(data, "(tt)", &p, &q);
                 for (i = 0; i < ARRAY_SIZE(timebases); i++) {
                         if (timebases[i][0] == p && timebases[i][1] == q) {
                                 devc->params[PARAM_TIMEBASE] = 30 - i;
-                                jyetech_dso112a_set_parameters(sdi);
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_VDIV:
+                g_variant_get(data, "(tt)", &p, &q);
+                for (i = 0; i < ARRAY_SIZE(vdivs); i++) {
+                        if (vdivs[i][0] == p && vdivs[i][1] == q) {
+                                devc->params[PARAM_VSEN] = 15 - i;
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_BUFFERSIZE:
+                p = g_variant_get_uint64(data);
+                for (i = 0; i < ARRAY_SIZE(buffersizes); i += 1) {
+                        if (buffersizes[i] == p) {
+                                long_p = (uint32_t *) &devc->params[PARAM_RECLEN];
+                                *long_p = GUINT32_TO_LE(buffersizes[i]);
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_COUPLING:
+                string = g_variant_get_string(data, NULL);
+                for (i = 0; i < ARRAY_SIZE(couplings); i += 1) {
+                        if (!g_strcmp0(couplings[i], string)) {
+                                devc->params[PARAM_CPL] = i;
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_TRIGGER_SOURCE:
+                string = g_variant_get_string(data, NULL);
+                for (i = 0; i < ARRAY_SIZE(sources); i += 1) {
+                        if (!g_strcmp0(sources[i], string)) {
+                                devc->params[PARAM_TRIGSRC] = i ? 2 : 0;
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_TRIGGER_SLOPE:
+                string = g_variant_get_string(data, NULL);
+                for (i = 0; i < ARRAY_SIZE(slopes); i += 1) {
+                        if (!g_strcmp0(slopes[i], string)) {
+                                devc->params[PARAM_TRIGSLOPE] = i;
+                                return SR_OK;
+                        }
+                }
+                return SR_ERR_ARG;
+        case SR_CONF_TRIGGER_LEVEL:
+                signed_p = (int32_t *) &devc->params[PARAM_TRIGLVL];
+                /* This probably depends on LSB, and needs to be fixed */
+                lvl = g_variant_get_double(data) / 0.04;
+                *signed_p = GINT32_TO_LE((int32_t) lvl);
+                return SR_OK;
+        case SR_CONF_HORIZ_TRIGGERPOS:
+                string = g_variant_get_string(data, NULL);
+                for (i = 0; i < ARRAY_SIZE(poss); i += 1) {
+                        if (!g_strcmp0(poss[i], string)) {
+                                devc->params[PARAM_TRIGPOS] = i;
                                 return SR_OK;
                         }
                 }
@@ -275,6 +401,26 @@ static int config_list(uint32_t key, GVariant **data,
         case SR_CONF_TIMEBASE:
                 *data = build_tuples(&timebases, ARRAY_SIZE(timebases));
                 return SR_OK;
+        case SR_CONF_VDIV:
+                *data = build_tuples(&vdivs, ARRAY_SIZE(vdivs));
+                return SR_OK;
+        case SR_CONF_BUFFERSIZE:
+                *data = g_variant_new_fixed_array(
+                        G_VARIANT_TYPE_UINT64, buffersizes,
+                        ARRAY_SIZE(buffersizes), sizeof(uint64_t));
+                return SR_OK;
+        case SR_CONF_COUPLING:
+                *data = g_variant_new_strv(couplings, ARRAY_SIZE(couplings));
+                return SR_OK;
+        case SR_CONF_TRIGGER_SOURCE:
+                *data = g_variant_new_strv(sources, ARRAY_SIZE(sources));
+                return SR_OK;
+        case SR_CONF_TRIGGER_SLOPE:
+                *data = g_variant_new_strv(slopes, ARRAY_SIZE(slopes));
+                return SR_OK;
+        case SR_CONF_HORIZ_TRIGGERPOS:
+                *data = g_variant_new_strv(slopes, ARRAY_SIZE(slopes));
+                return SR_OK;
 	default:
                 sr_err("Invalid config list 0x%x requested.", key);
 		return SR_ERR_NA;
@@ -293,8 +439,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
         if (!(devc = sdi->priv) || !(serial = sdi->conn))
                 return SR_ERR_ARG;
-
-        if (!jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
+        
+        
+        if (!jyetech_dso112a_set_parameters(sdi)
+            || !jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
             || !(frame = jyetech_dso112a_read_frame(serial)))
                 return SR_ERR_IO;
 

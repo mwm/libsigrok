@@ -85,8 +85,8 @@
 
 #define QUERY_NAME	5
 
-#define PARAM_VSEN	1
-#define PARAM_CPL	2
+#define PARAM_VSEN	4
+#define PARAM_CPL	5
 #define PARAM_VPOS	6
 #define PARAM_TIMEBASE	12
 #define PARAM_TRIGMODE	16
@@ -114,12 +114,6 @@ struct dev_context {
 
 	/* Temporary state across callbacks */
 };
-
-#define GET_UNSIGNED(_frame, _pos) ((_frame)[_pos] + 256 * (_frame)[(_pos) + 1])
-#define GET_SIGNED(_frame, _pos) ((int16_t) GET_UNSIGNED(_frame, _pos))
-#define PUT_WORD(_value, _frame, _pos) \
-        ((_frame)[_pos] = _value & 0xFF, \
-         (_frame)[(_pos) + 1] = ((_value) >> 8) & 0xFF)
 
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
