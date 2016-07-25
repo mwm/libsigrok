@@ -23,8 +23,7 @@
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info;
 
 static const uint32_t scanopts[] = {
-	SR_CONF_CONN,
-	SR_CONF_SERIALCOMM
+     SR_CONF_CONN,
 };
 
 static const uint32_t drvopts[] = {
@@ -119,13 +118,9 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 		case SR_CONF_CONN:
 			conn = g_variant_get_string(src->data, NULL);
 			break;
-		case SR_CONF_SERIALCOMM:
-			serialcomm = g_variant_get_string(src->data, NULL);
-			break;
-		}
+                }
 	}
-	if (!serialcomm)
-		serialcomm = SERIALCOMM;
+        serialcomm = SERIALCOMM;
 
         if (!conn)
                 conn = SERIALCONN;
