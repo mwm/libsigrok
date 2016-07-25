@@ -31,7 +31,10 @@ static const uint32_t drvopts[] = {
 };
 
 static const uint32_t devopts[] = {
-        SR_CONF_CONTINUOUS | SR_CONF_GET | SR_CONF_SET,
+        SR_CONF_CONTINUOUS,
+        SR_CONF_LIMIT_FRAMES | SR_CONF_GET | SR_CONF_SET,
+        SR_CONF_LIMIT_SAMPLES | SR_CONF_GET | SR_CONF_SET,
+        SR_CONF_LIMIT_MSEC | SR_CONF_GET | SR_CONF_SET,
 	SR_CONF_TIMEBASE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_VDIV | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_BUFFERSIZE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
@@ -39,6 +42,7 @@ static const uint32_t devopts[] = {
 	SR_CONF_TRIGGER_SOURCE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_SLOPE | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 	SR_CONF_TRIGGER_LEVEL | SR_CONF_GET | SR_CONF_SET,
+        SR_CONF_SAMPLERATE | SR_CONF_GET,
 	SR_CONF_HORIZ_TRIGGERPOS | SR_CONF_GET | SR_CONF_SET | SR_CONF_LIST,
 };
 
@@ -153,6 +157,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 
         /* Ours, so tell everyone about it */
         sr_info("Found device on port %s.", conn);
+        sr_sw_limits_init(&devc->limits);
         sdi = g_malloc0(sizeof(struct sr_dev_inst));
         sdi->status = SR_ST_INACTIVE;
         sdi->vendor = g_strdup("JYETech");
@@ -218,7 +223,12 @@ static int config_get(uint32_t key, GVariant **data,
 	switch (key) {
         case SR_CONF_CONTINUOUS:
                 *data = g_variant_new_boolean(devc->params[PARAM_TRIGMODE] != 2);
+        case SR_CONF_LIMIT_FRAMES:
+                *data = g_variant_new_uint64(devc->limit_frames);
                 return SR_OK;
+	case SR_CONF_LIMIT_SAMPLES:
+	case SR_CONF_LIMIT_MSEC:
+		return sr_sw_limits_config_get(&devc->limits, key, data);
         case SR_CONF_TIMEBASE:
                 value = 30 - devc->params[PARAM_TIMEBASE];
                 *data = g_variant_new("(tt)", timebases[value][0], 
@@ -248,6 +258,12 @@ static int config_get(uint32_t key, GVariant **data,
                 /* In LSB's? Probably needs fixing */
                 *data = g_variant_new_double(GINT16_FROM_LE(*signed_p) * 0.04);
                 return SR_OK;
+        case SR_CONF_SAMPLERATE:
+                // 25 divided by the timebase value.
+                value = 30 - devc->params[PARAM_TIMEBASE];
+                *data = g_variant_new_uint64(
+                        25 * timebases[value][1] / timebases[value][0]);
+                return SR_OK;
         case SR_CONF_HORIZ_TRIGGERPOS:
                 *data = g_variant_new_double(poss[devc->params[PARAM_TRIGPOS]]);
                 return SR_OK;
@@ -276,10 +292,12 @@ static int config_set(uint32_t key, GVariant *data, const struct sr_dev_inst *sd
                 return SR_ERR_ARG;
 
 	switch (key) {
-        case SR_CONF_CONTINUOUS:
-                devc->params[PARAM_TRIGMODE] = g_variant_get_boolean(data)
-                        ? 0 : 2;
+        case SR_CONF_LIMIT_FRAMES:
+                devc->limit_frames = g_variant_get_uint64(data);
                 return SR_OK;
+        case SR_CONF_LIMIT_SAMPLES:
+        case SR_CONF_LIMIT_MSEC:
+		return sr_sw_limits_config_set(&devc->limits, key, data);
         case SR_CONF_TIMEBASE:
                 g_variant_get(data, "(tt)", &p, &q);
                 for (i = 0; i < ARRAY_SIZE(timebases); i++) {
@@ -439,7 +457,10 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
         if (!(devc = sdi->priv) || !(serial = sdi->conn))
                 return SR_ERR_ARG;
         
-        
+        devc->num_frames = 0;
+        sr_sw_limits_acquisition_start(&devc->limits);
+
+        sr_spew("starting acquisition");
         if (jyetech_dso112a_set_parameters(sdi) != SR_OK
             || jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
                != SR_OK
@@ -456,7 +477,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
                         if (status == SR_OK)
                                 devc->acquiring = TRUE;
                 }
+        } else {
+                sr_err("Failed to start acquisition: Frame ID: 0x%x, type %c, name %s",
+                       frame[FRAME_ID], frame[FRAME_EXTRA], &frame[QUERY_NAME]);
         }
+
         g_free(frame);
         return status;
 }

@@ -108,12 +108,15 @@ struct dev_context {
 	/* Acquisition settings */
         uint8_t *params;
         struct sr_serial_dev_inst *serial;
+	struct sr_sw_limits limits;
 
 	/* Operational state */
         gboolean acquiring;
         uint8_t data[1024];
+        uint64_t limit_frames;
 
 	/* Temporary state across callbacks */
+        uint64_t num_frames;
 };
 
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);

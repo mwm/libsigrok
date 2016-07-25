@@ -217,7 +217,8 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 		return TRUE;
 
 	if (revents == G_IO_IN) {
-                sr_spew("Reading frame");
+                sr_spew("Reading frame %ld of %ld", devc->num_frames + 1,
+                        devc->limit_frames);
                 frame = jyetech_dso112a_read_frame(serial);
                 if (!devc->acquiring) {
                         jyetech_dso112a_send_command(
@@ -244,6 +245,8 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                 sr_err("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
                                 return SR_ERR;
                         }
+                        sr_sw_limits_update_samples_read(
+                                &devc->limits, analog.num_samples);
                         memcpy(devc->data, &frame[CAPTURE_DATA], 
                                analog.num_samples);
                         analog.data = &devc->data;
@@ -255,6 +258,11 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         packet.payload = &analog;
                         sr_session_send(sdi, &packet);
                         g_slist_free(analog.meaning->channels);
+                        if (sr_sw_limits_check(&devc->limits) ||
+                            (devc->limit_frames 
+                             && devc->num_frames++ >= devc->limit_frames)) {
+                                sdi->driver->dev_acquisition_stop(sdi);
+                        }
                 }
                 if (frame)
                         g_free(frame);
