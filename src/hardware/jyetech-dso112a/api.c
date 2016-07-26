@@ -124,10 +124,10 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			break;
                 }
 	}
-        //serialcomm = SERIALCOMM;
+        serialcomm = SERIALCOMM;
 
-        if (!conn)
-                conn = SERIALCONN;
+        /* if (!conn) */
+        /*         conn = SERIALCONN; */
 
         sr_info("Probing port %s.", conn);
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
