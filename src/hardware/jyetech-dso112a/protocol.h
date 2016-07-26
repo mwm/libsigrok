@@ -119,6 +119,9 @@ struct dev_context {
         uint64_t num_frames;
 };
 
+SR_PRIV const uint64_t (*jyetech_dso112a_get_vdiv(struct dev_context *devc))[2];
+SR_PRIV const uint64_t (*jyetech_dso112a_get_timebase(
+                                struct dev_context *devc))[2];
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
 SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
                                          uint8_t ID, uint8_t extra);

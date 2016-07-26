@@ -24,6 +24,7 @@
 // Let IO time out in 1 second for now.
 #define TIMEOUT 1000
                 
+
 static int jyetech_dso112a_get_stuffed(struct sr_serial_dev_inst *port)
 {
      uint8_t c;
@@ -208,6 +209,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
         struct sr_analog_meaning meaning;
         struct sr_analog_spec spec;
         
+        const uint64_t (*value_p)[2];
         uint8_t *frame;
 
 	(void)fd;
@@ -229,13 +231,14 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         encoding.unitsize = sizeof(uint8_t);
                         encoding.is_signed = FALSE;
                         encoding.is_float = FALSE;
-                        /* WARNING!!! These values assume 1volt/div setting on scope!!! */
-                        encoding.scale.p = 1;
-                        encoding.scale.q = 25;
+                        value_p = jyetech_dso112a_get_vdiv(devc);
+                        encoding.scale.p = (*value_p)[0];
+                        encoding.scale.q = 25 * (*value_p)[1];
                         encoding.offset.p =
                                 -(GINT16_FROM_LE(*(int16_t *)
-                                                 &devc->params[PARAM_VPOS]) + 128);
-                        encoding.offset.q = 25;
+                                                 &devc->params[PARAM_VPOS]) + 128)
+                                * (*value_p)[0];
+                        encoding.offset.q = 25 * (*value_p)[1];
                         if (frame[FRAME_EXTRA] == SINGLE_SAMPLE) {
                                 analog.num_samples = 1;
                         } else if (frame[FRAME_EXTRA] == BULK_SAMPLE) {

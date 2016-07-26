@@ -95,15 +95,22 @@ static const uint64_t vdivs[][2] = {
 };
 
 static const uint64_t buffersizes[] = {512, 1024};
-
 static const char *couplings[] = {"DC", "AC", "GND"};
-        
 static const char *sources[] = {"INT", "EXT"};
-
 static const char *slopes[] = {"Neg", "Pos"};
-
 static const double poss[] = {0.125, 0.25, 0.5, 0.75, 0.875};
-        
+
+
+SR_PRIV const uint64_t (*jyetech_dso112a_get_vdiv(struct dev_context *devc))[2]
+{
+        return &vdivs[15 - devc->params[PARAM_VSEN]];
+}
+
+
+SR_PRIV const uint64_t (*jyetech_dso112a_get_timebase(struct dev_context *devc))[2]
+{
+        return &timebases[30 - devc->params[PARAM_TIMEBASE]];
+}
 
 static GSList *scan(struct sr_dev_driver *di, GSList *options)
 {
@@ -214,7 +221,7 @@ static int config_get(uint32_t key, GVariant **data,
         uint32_t *long_p;
         int32_t *signed_p;
         struct dev_context *devc;
-        int value;
+        const uint64_t (*value_p)[2];
 
 	(void)cg;
 
@@ -230,13 +237,12 @@ static int config_get(uint32_t key, GVariant **data,
 	case SR_CONF_LIMIT_MSEC:
 		return sr_sw_limits_config_get(&devc->limits, key, data);
         case SR_CONF_TIMEBASE:
-                value = 30 - devc->params[PARAM_TIMEBASE];
-                *data = g_variant_new("(tt)", timebases[value][0], 
-                                      timebases[value][1]);
+                value_p = jyetech_dso112a_get_timebase(devc);
+                *data = g_variant_new("(tt)", (*value_p)[0], (*value_p)[1]);
                 return SR_OK;
         case SR_CONF_VDIV:
-                value = 15 - devc->params[PARAM_VSEN];
-                *data = g_variant_new("(tt)", vdivs[value][0], vdivs[value][1]);
+                value_p = jyetech_dso112a_get_vdiv(devc);
+                *data = g_variant_new("(tt)", (*value_p)[0], (*value_p)[1]);
                 return SR_OK;
         case SR_CONF_BUFFERSIZE:
                 long_p = (uint32_t *)&devc->params[PARAM_RECLEN];
@@ -260,9 +266,8 @@ static int config_get(uint32_t key, GVariant **data,
                 return SR_OK;
         case SR_CONF_SAMPLERATE:
                 // 25 divided by the timebase value.
-                value = 30 - devc->params[PARAM_TIMEBASE];
-                *data = g_variant_new_uint64(
-                        25 * timebases[value][1] / timebases[value][0]);
+                value_p = jyetech_dso112a_get_timebase(devc);
+                *data = g_variant_new_uint64(25 * (*value_p)[1] / (*value_p)[0]);
                 return SR_OK;
         case SR_CONF_HORIZ_TRIGGERPOS:
                 *data = g_variant_new_double(poss[devc->params[PARAM_TRIGPOS]]);
