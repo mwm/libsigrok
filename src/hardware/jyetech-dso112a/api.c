@@ -124,7 +124,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 			break;
                 }
 	}
-        serialcomm = SERIALCOMM;
+        //serialcomm = SERIALCOMM;
 
         if (!conn)
                 conn = SERIALCONN;
