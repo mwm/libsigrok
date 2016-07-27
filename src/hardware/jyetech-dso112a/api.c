@@ -144,9 +144,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         /* Ask whatever's there what kind of jyetech device is is */
-        if (jyetech_dso112a_send_command(serial, COMMAND_QUERY, QUERY_EXTRA)
-            != SR_OK
-            || !(frame = jyetech_dso112a_read_frame(serial))) {
+        if (!(frame = jyetech_dso112a_send_command(serial, COMMAND_QUERY,
+                                                   QUERY_EXTRA))) {
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
                 return NULL;
@@ -467,9 +466,8 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
         sr_spew("starting acquisition");
         if (jyetech_dso112a_set_parameters(sdi) != SR_OK
-            || jyetech_dso112a_send_command(serial, COMMAND_START, START_EXTRA)
-               != SR_OK
-            || !(frame = jyetech_dso112a_read_frame(serial)))
+            || !(frame = jyetech_dso112a_send_command(serial, COMMAND_START,
+                                                      START_EXTRA)))
                 return SR_ERR_IO;
 
         if (frame[FRAME_ID] == QUERY_RESPONSE && frame[FRAME_EXTRA] == devc->type
@@ -493,6 +491,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
 static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
+        uint8_t *frame;
         struct dev_context *devc;
 
 	if (sdi->status != SR_ST_ACTIVE)
@@ -500,10 +499,15 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 
         if ((devc = sdi->priv))
                 devc->acquiring = FALSE;
-        jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA); 
+        frame = jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA);
         std_session_send_df_end(sdi);
         serial_source_remove(sdi->session, sdi->conn);
-        return SR_OK;
+
+        if (frame) {
+                g_free(frame);
+                return SR_OK;
+        }
+        return SR_ERR_IO;
 }
 
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info = {

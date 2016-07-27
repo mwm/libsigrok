@@ -60,7 +60,9 @@
 #define COMMAND_START	0xE1
 #define START_EXTRA	0xC0
 
-/* Further commands don't have a response */
+/* Further commands just get an ACk */
+#define ACK_RESPONSE	0xE2
+
 #define COMMAND_STOP	0xE9
 #define STOP_EXTRA	0x00
 
@@ -123,8 +125,8 @@ SR_PRIV const uint64_t (*jyetech_dso112a_get_vdiv(struct dev_context *devc))[2];
 SR_PRIV const uint64_t (*jyetech_dso112a_get_timebase(
                                 struct dev_context *devc))[2];
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
-SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
-                                         uint8_t ID, uint8_t extra);
+SR_PRIV uint8_t *jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
+                                              uint8_t ID, uint8_t extra);
 SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *serial);
 SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *serial);
 SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port);

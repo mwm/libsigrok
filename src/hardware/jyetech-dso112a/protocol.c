@@ -106,14 +106,16 @@ static int jyetech_dso112a_send_frame(
         return SR_ERR_IO;
 }
 
-SR_PRIV int jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
-                                         uint8_t ID, uint8_t extra)
+SR_PRIV uint8_t *jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
+                                              uint8_t ID, uint8_t extra)
 {
         static uint8_t command[5] = {0, 4, 0, 0} ;
+
         command[0] = ID;
         command[3] = extra;
-        
-        return jyetech_dso112a_send_frame(port, command);
+        return jyetech_dso112a_send_frame(port, command) == SR_OK
+                ? jyetech_dso112a_read_frame(port)
+                : NULL;
 }
 
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
@@ -146,7 +148,7 @@ SR_PRIV void jyetech_dso112a_dev_context_free(void *p)
 
 SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
 {
-        int status;
+        int status = SR_ERR_IO;
         uint8_t *frame;
         struct dev_context *devc;
         struct sr_serial_dev_inst *serial;
@@ -158,22 +160,18 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
         serial = sdi->conn;
         status = SR_ERR_IO;
         sr_spew("getting parameters");
-        if (jyetech_dso112a_send_command(serial, COMMAND_GET, PARAM_EXTRA)
-            == SR_OK) {
-                frame = jyetech_dso112a_read_frame(serial);
-                if (frame) {
-                        if (frame[FRAME_ID] == GET_RESPONSE 
-                            && frame[FRAME_EXTRA] == PARM_RESP_EXTRA) {
-                                sr_spew("Got parameters");
-                                status = SR_OK;
-                                if (devc->params) {
-                                        g_free(devc->params);
-                                }
-                                devc->params = frame;
-                        } else {
-                                status = SR_ERR;
-                                g_free(frame);
+        if ((frame = jyetech_dso112a_send_command(serial,
+                                                  COMMAND_GET, PARAM_EXTRA))) {
+                if (frame[FRAME_ID] != GET_RESPONSE 
+                    || frame[FRAME_EXTRA] != PARM_RESP_EXTRA) {
+                        g_free(frame);
+                } else {
+                        sr_spew("Got parameters");
+                        if (devc->params) {
+                                g_free(devc->params);
                         }
+                        devc->params = frame;
+                        status = SR_OK;
                 }
         }
         return status;
@@ -223,9 +221,17 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         devc->limit_frames);
                 frame = jyetech_dso112a_read_frame(serial);
                 if (!devc->acquiring) {
-                        jyetech_dso112a_send_command(
-                                serial, COMMAND_STOP, STOP_EXTRA); 
-                } else if (frame && frame[FRAME_ID] == SAMPLE_FRAME) {
+                        if (frame) {
+                                g_free(frame);
+                        }
+                        frame = jyetech_dso112a_send_command(
+                                     serial, COMMAND_STOP, STOP_EXTRA); 
+                } else if (!frame) {	// Hmm. We seem to see this after every packet.
+                        sr_err("IO error during capture.");
+                } else if (frame[FRAME_ID] != SAMPLE_FRAME) {
+                        sr_err("Bad frame id 0x%x during capture.",
+                               frame[FRAME_ID]);
+                } else {
                         sr_spew("Got sample");
                         sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
                         encoding.unitsize = sizeof(uint8_t);
@@ -246,7 +252,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                         *(uint16_t *) &frame[FRAME_SIZE]) - 8;
                         } else {
                                 sr_err("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
-                                return SR_ERR;
+                                return TRUE;
                         }
                         sr_sw_limits_update_samples_read(
                                 &devc->limits, analog.num_samples);
