@@ -120,6 +120,7 @@ SR_PRIV uint8_t *jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
 
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
 {
+        uint16_t frame_size;
         struct dev_context *device;
         
         if (frame[FRAME_ID] != QUERY_RESPONSE || frame[FRAME_EXTRA] != 'O') {
@@ -127,10 +128,17 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
                 return NULL;
         }
                 
+        frame_size = GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]);
+        if (frame_size < QUERY_LENGTH) {
+                sr_err("You need to update your DOS 112A firmware. Length: 0x%x",
+                       frame_size);
+                return NULL;
+        }
+
         /* This is indeed a frame describing an oscilloscope */
         device = g_malloc0(sizeof(struct dev_context));
         device->type = frame[FRAME_EXTRA];
-        frame[GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]) - 1] = 0;
+        frame[frame_size - 1] = 0;
         device->description = g_strdup((char *) &frame[QUERY_NAME]);
         return device;
 }        
@@ -227,7 +235,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         frame = jyetech_dso112a_send_command(
                                      serial, COMMAND_STOP, STOP_EXTRA); 
                 } else if (!frame) {	// Hmm. We seem to see this after every packet.
-                        sr_err("IO error during capture.");
+                        sr_spew("Buggy IO catpure error.");
                 } else if (frame[FRAME_ID] != SAMPLE_FRAME) {
                         sr_err("Bad frame id 0x%x during capture.",
                                frame[FRAME_ID]);

@@ -60,7 +60,7 @@
 #define COMMAND_START	0xE1
 #define START_EXTRA	0xC0
 
-/* Further commands just get an ACk */
+/* Further commands just get an ACK */
 #define ACK_RESPONSE	0xE2
 
 #define COMMAND_STOP	0xE9
@@ -86,6 +86,8 @@
 #define CAPTURE_DATA	4
 
 #define QUERY_NAME	5
+#define QUERY_VERSION	15
+#define QUERY_LENGTH	26
 
 #define PARAM_VSEN	4
 #define PARAM_CPL	5
