@@ -121,17 +121,19 @@ struct dev_context {
 
 	/* Temporary state across callbacks */
         uint64_t num_frames;
+        uint8_t buffer;
 };
 
 SR_PRIV const uint64_t (*jyetech_dso112a_get_vdiv(struct dev_context *devc))[2];
 SR_PRIV const uint64_t (*jyetech_dso112a_get_timebase(
                                 struct dev_context *devc))[2];
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);
-SR_PRIV uint8_t *jyetech_dso112a_send_command(struct sr_serial_dev_inst *serial,
-                                              uint8_t ID, uint8_t extra);
-SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *serial);
-SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *serial);
-SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port);
+SR_PRIV uint8_t *jyetech_dso112a_send_command(
+        const struct sr_dev_inst *sdi, uint8_t ID, uint8_t extra);
+SR_PRIV uint8_t *jyetech_dso112a_raw_send_command(
+        struct sr_serial_dev_inst *port, uint8_t ID, uint8_t extra);
+SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi);
+SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *sdi);
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *packet);
 SR_PRIV void jyetech_dso112a_dev_context_free(void *p);
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data);

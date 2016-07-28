@@ -25,98 +25,164 @@
 #define TIMEOUT 1000
                 
 
-static int jyetech_dso112a_get_stuffed(struct sr_serial_dev_inst *port)
+static int get_stuffed(const struct sr_dev_inst *sdi)
 {
-     uint8_t c;
-     static uint8_t stuffing = 0;
+        struct sr_serial_dev_inst *port;
+        struct dev_context *devc;
+        uint8_t c;
 
-     /*
-      * jyetech byte-stuffs a zero after SYNC bytes in data, which is an invalid
-      * Frame ID, which always follows a proper SYNC byte. So when we see a SYNC
-      * byte, we read ahead to get the stuffing byte. If it's not zero, we'll
-      * return it on the next call. If it is zero, it's discarded.
-      */
-     if (stuffing) {
-          c = stuffing;
-          stuffing = 0;
-          return c;
-     }
+        if (!(port = sdi->conn) || !(devc = sdi->priv)) {
+                sr_info("Called get stuffed with null conn or devc");
+                return -1;
+        }
 
-     if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1) {
-          sr_dbg("Timeout during read.");
-          return -1;
-     }
-     if (c == SYNC) {
-          if (serial_read_blocking(port, &stuffing, 1, TIMEOUT) != 1) {
-               sr_dbg("Timeout during read.");
-               return -1;
-          }
-     }
-     return c;
+        /*
+         * jyetech byte-stuffs a zero after SYNC bytes in data, which is an invalid
+         * Frame ID, which always follows a proper SYNC byte. So when we see a SYNC
+         * byte, we read ahead to get the stuffing byte. If it's not zero, we'll
+         * return it on the next call. If it is zero, it's discarded.
+         */
+        if (devc->buffer) {
+                c = devc->buffer;
+                devc->buffer = 0;
+                sr_spew("Read byte 0x%x", c);
+                return c;
+        }
+
+        if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1) {
+                sr_info("Timeout during read.");
+                return -1;
+        }
+        if (c == SYNC) {
+                if (serial_read_blocking(port, &devc->buffer, 1, TIMEOUT) != 1) {
+                        sr_info("Timeout during read.");
+                        return -1;
+                }
+        }
+        sr_spew("Read byte 0x%x", c);
+        return c;
 }
 
-SR_PRIV uint8_t *jyetech_dso112a_read_frame(struct sr_serial_dev_inst *port)
+static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 {
         int i, c, id, lo_byte, hi_byte;
         uint16_t frame_size;
-        uint8_t *frame;
+        uint8_t *frame = NULL;
         
-        c = jyetech_dso112a_get_stuffed(port);
+        c = get_stuffed(sdi);
         if (c != SYNC) {
-             sr_spew("Got 0x%x looking for SYNC byte.", c);
-             return NULL;
+             sr_warn("Got 0x%x looking for SYNC byte.", c);
+        } else if ((id = get_stuffed(sdi)) >= 0) {
+                lo_byte = get_stuffed(sdi);
+                if (lo_byte >= 0) {
+                        hi_byte = get_stuffed(sdi);
+                        if (hi_byte >= 0) {
+                                frame_size = lo_byte + 256 * hi_byte;
+                                frame = g_malloc(frame_size);
+                                frame[FRAME_ID] = id;
+                                frame[FRAME_SIZE]     = lo_byte;
+                                frame[FRAME_SIZE + 1] = hi_byte;
+                                for (i = 3; i < frame_size;) {
+                                        c = get_stuffed(sdi);
+                                        if (c < 0) {
+                                                g_free(frame);
+                                                return NULL;
+                                        }
+                                        frame[i++] = c;
+                                }
+                        }
+                }
         }
-
-        id = jyetech_dso112a_get_stuffed(port);
-        if (id >= 0) {
-             lo_byte = jyetech_dso112a_get_stuffed(port);
-             if (lo_byte >= 0) {
-                  hi_byte = jyetech_dso112a_get_stuffed(port);
-                  if (hi_byte >= 0) {
-                       frame_size = lo_byte + 256 * hi_byte;
-                       frame = g_malloc(frame_size);
-                       frame[FRAME_ID] = id;
-                       frame[FRAME_SIZE]     = lo_byte;
-                       frame[FRAME_SIZE + 1] = hi_byte;
-                       for (i = 3; i < frame_size;) {
-                            c = jyetech_dso112a_get_stuffed(port);
-                            if (c < 0) {
-                                 g_free(frame);
-                                 return NULL;
-                            }
-                            frame[i++] = c;
-                       }
-                       return frame;
-                  }
-             }
-        }
-        return NULL;
+        return frame;
 }
 
-static int jyetech_dso112a_send_frame(
-     struct sr_serial_dev_inst *serial, uint8_t *frame)
+static uint8_t *raw_read_frame(struct sr_serial_dev_inst *port) {
+        uint8_t c, id, lo_byte, hi_byte;
+        uint16_t frame_size;
+        uint8_t *frame = NULL;
+        
+        if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1) {
+                sr_info("Timeout during read.");
+        } else if (c != SYNC) {
+                sr_warn("Got 0x%x looking for SYNC byte.", c);
+        } else if (serial_read_blocking(port, &id, 1, TIMEOUT) != 1 ||
+                   serial_read_blocking(port, &lo_byte, 1, TIMEOUT) != 1 ||
+                   serial_read_blocking(port, &hi_byte, 1, TIMEOUT) != 1) {
+                sr_info("Timeout during read.");
+        } else {
+                frame_size = lo_byte + 256 * hi_byte;
+                frame = g_malloc(frame_size);
+                frame[FRAME_ID] = id;
+                frame[FRAME_SIZE]     = lo_byte;
+                frame[FRAME_SIZE + 1] = hi_byte;
+                frame_size -= 3;
+                if (serial_read_blocking(
+                            port, &frame[FRAME_EXTRA], frame_size, TIMEOUT)
+                    != frame_size) {
+                        sr_info("Timeout during read.");
+                        g_free(frame);
+                        frame = NULL;
+                }
+        }
+        return frame;
+}
+
+
+static int send_frame(
+        struct sr_serial_dev_inst *port, uint8_t *frame)
 {
         int8_t sync = SYNC;
-
         uint16_t size = GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]);
 
-        if (serial_write_blocking(serial, &sync, 1, TIMEOUT) == 1
-            && serial_write_blocking(serial, frame, size, TIMEOUT) == size)
+        if (serial_write_blocking(port, &sync, 1, TIMEOUT) == 1
+            && serial_write_blocking(port, frame, size, TIMEOUT) == size)
                 return SR_OK;
+        sr_info("Timeout during write.");
         return SR_ERR_IO;
 }
 
-SR_PRIV uint8_t *jyetech_dso112a_send_command(struct sr_serial_dev_inst *port,
-                                              uint8_t ID, uint8_t extra)
+static uint8_t *send_command(
+        const void *dev, uint8_t id, uint8_t extra, gboolean raw)
 {
         static uint8_t command[5] = {0, 4, 0, 0} ;
+        const struct sr_dev_inst *sdi;
+        struct sr_serial_dev_inst *port;
 
-        command[0] = ID;
+        command[0] = id;
         command[3] = extra;
-        return jyetech_dso112a_send_frame(port, command) == SR_OK
-                ? jyetech_dso112a_read_frame(port)
+        
+        if (raw) {
+                port = (struct sr_serial_dev_inst *) dev;
+        } else {
+                sdi = dev;
+                if (!(port = sdi->conn)) {
+                        sr_info("Called send_command with invalid port");
+                        return NULL;
+                }
+        }
+
+        return send_frame(port, command) == SR_OK 
+                ? (raw ? raw_read_frame(port) : read_frame(sdi))
                 : NULL;
 }
+
+SR_PRIV uint8_t *jyetech_dso112a_send_command(
+        const struct sr_dev_inst *sdi, uint8_t id, uint8_t extra)
+{
+        return send_command(sdi, id, extra, FALSE);
+}
+
+/*
+ * This version doesn't use the devc-buffered IO. It should only be used
+ * when the command and return frame are known to not contain a SYNC
+ * byte. Generally, only for use by the scan routine.
+ */
+SR_PRIV uint8_t *jyetech_dso112a_raw_send_command(
+        struct sr_serial_dev_inst *port, uint8_t id, uint8_t extra) {
+
+        return send_command(port, id, extra, TRUE);
+}
+        
 
 SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
 {
@@ -124,7 +190,7 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
         struct dev_context *device;
         
         if (frame[FRAME_ID] != QUERY_RESPONSE || frame[FRAME_EXTRA] != 'O') {
-                sr_spew("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[FRAME_ID], frame[FRAME_EXTRA]);
+                sr_dbg("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[FRAME_ID], frame[FRAME_EXTRA]);
                 return NULL;
         }
                 
@@ -159,25 +225,29 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
         int status = SR_ERR_IO;
         uint8_t *frame;
         struct dev_context *devc;
-        struct sr_serial_dev_inst *serial;
 
         if (!(devc = sdi->priv)) {
+                sr_info("Called get_parameters with invalid devc");
                 return SR_ERR_ARG;
         }
         
-        serial = sdi->conn;
         status = SR_ERR_IO;
         sr_spew("getting parameters");
-        if ((frame = jyetech_dso112a_send_command(serial,
-                                                  COMMAND_GET, PARAM_EXTRA))) {
+        if ((frame = jyetech_dso112a_send_command(
+                     sdi, COMMAND_GET, PARAM_EXTRA))) {
                 if (frame[FRAME_ID] != GET_RESPONSE 
                     || frame[FRAME_EXTRA] != PARM_RESP_EXTRA) {
+                        sr_info("Got something other than parameters");
                         g_free(frame);
                 } else {
                         sr_spew("Got parameters");
                         if (devc->params) {
                                 g_free(devc->params);
                         }
+                        /* We right this back with changes, so set that up */
+                        frame[FRAME_ID] = COMMAND_SET;
+                        frame[FRAME_EXTRA] = SET_EXTRA;
+                        frame[PARAM_TRIGMODE] = 0;
                         devc->params = frame;
                         status = SR_OK;
                 }
@@ -188,22 +258,28 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
 
 SR_PRIV int jyetech_dso112a_set_parameters(const struct sr_dev_inst *sdi)
 {
+        int status;
         uint8_t *frame;
         struct dev_context *devc;
+        struct sr_serial_dev_inst *port;
 
-        if (!(devc = sdi->priv))
+        if (!(devc = sdi->priv) || !(frame = devc->params) || !(port = sdi->conn))
+        {
+                sr_info("Called set_parameters with invalid devc, params or port");
                 return SR_ERR_ARG;
-
-        if (!(frame = devc->params))
-                return SR_ERR_ARG;
+        }
                 
-        frame[FRAME_ID] = COMMAND_SET;
-        frame[FRAME_EXTRA] = SET_EXTRA;
-        /* Force auto-trigger mode to make sure we are getting data */
-        frame[PARAM_TRIGMODE] = 0;
-        return jyetech_dso112a_send_frame(sdi->conn, frame);
+        if ((status = send_frame(port, frame)) == SR_OK) {
+                if ((frame = read_frame(sdi))) {
+                        g_free(frame);
+                } else {
+                        status = SR_ERR_IO;
+                }
+        }
+        return status ;
 }
                         
+
 SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 {
 	struct sr_dev_inst *sdi;
@@ -220,27 +296,26 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
 
 	(void)fd;
 
-        sr_spew("Handling event");
+        sr_dbg("Handling event");
 	if (!(sdi = cb_data) || !(devc = sdi->priv) || !(serial = sdi->conn))
 		return TRUE;
 
 	if (revents == G_IO_IN) {
-                sr_spew("Reading frame %ld of %ld", devc->num_frames + 1,
+                sr_dbg("Reading frame %ld of %ld", devc->num_frames + 1,
                         devc->limit_frames);
-                frame = jyetech_dso112a_read_frame(serial);
+                frame = read_frame(sdi);
                 if (!devc->acquiring) {
                         if (frame) {
                                 g_free(frame);
                         }
                         frame = jyetech_dso112a_send_command(
-                                     serial, COMMAND_STOP, STOP_EXTRA); 
+                                     sdi, COMMAND_STOP, STOP_EXTRA); 
                 } else if (!frame) {	// Hmm. We seem to see this after every packet.
-                        sr_spew("Buggy IO catpure error.");
+                        sr_info("Buggy IO capture error.");
                 } else if (frame[FRAME_ID] != SAMPLE_FRAME) {
-                        sr_err("Bad frame id 0x%x during capture.",
+                        sr_info("Bad frame id 0x%x during capture.",
                                frame[FRAME_ID]);
                 } else {
-                        sr_spew("Got sample");
                         sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
                         encoding.unitsize = sizeof(uint8_t);
                         encoding.is_signed = FALSE;
@@ -259,9 +334,11 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                 analog.num_samples = GUINT16_FROM_LE(
                                         *(uint16_t *) &frame[FRAME_SIZE]) - 8;
                         } else {
-                                sr_err("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
+                                sr_info("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
                                 return TRUE;
                         }
+                        sr_dbg("Got capture frame with %d samples",
+                        analog.num_samples);
                         sr_sw_limits_update_samples_read(
                                 &devc->limits, analog.num_samples);
                         memcpy(devc->data, &frame[CAPTURE_DATA], 

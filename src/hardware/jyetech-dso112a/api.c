@@ -133,10 +133,7 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
 	}
         serialcomm = SERIALCOMM;
 
-        /* if (!conn) */
-        /*         conn = SERIALCONN; */
-
-        sr_info("Probing port %s.", conn);
+        sr_dbg("Probing port %s.", conn);
 	serial = sr_serial_dev_inst_new(conn, serialcomm);
 	if (serial_open(serial, SERIAL_RDWR) != SR_OK) {
                 sr_serial_dev_inst_free(serial);
@@ -144,8 +141,8 @@ static GSList *scan(struct sr_dev_driver *di, GSList *options)
         }
 
         /* Ask whatever's there what kind of jyetech device is is */
-        if (!(frame = jyetech_dso112a_send_command(serial, COMMAND_QUERY,
-                                                   QUERY_EXTRA))) {
+        if (!(frame = jyetech_dso112a_raw_send_command(
+                      serial, COMMAND_QUERY, QUERY_EXTRA))) {
                 serial_close(serial);
                 sr_serial_dev_inst_free(serial);
                 return NULL;
@@ -187,7 +184,7 @@ static int dev_open(struct sr_dev_inst *sdi)
         struct dev_context *devc;
 
         if (!(devc = sdi->priv))
-                return SR_ERR;
+                return SR_ERR_ARG;
 
         serial = sdi->conn;
 	sr_info("Opening device %s.", serial->port);
@@ -195,6 +192,7 @@ static int dev_open(struct sr_dev_inst *sdi)
         if (status == SR_OK) {
                 status = jyetech_dso112a_get_parameters(sdi);
                 if (status != SR_OK) {
+                        sr_warn("Failed to get parameters");
                         serial_close(serial);
                 } else {
                         sdi->status = SR_ST_ACTIVE;
@@ -466,9 +464,11 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
         sr_spew("starting acquisition");
         if (jyetech_dso112a_set_parameters(sdi) != SR_OK
-            || !(frame = jyetech_dso112a_send_command(serial, COMMAND_START,
-                                                      START_EXTRA)))
+            || !(frame = jyetech_dso112a_send_command(
+                         sdi, COMMAND_START, START_EXTRA))) {
+                sr_info("Failed to set parameters");
                 return SR_ERR_IO;
+        }
 
         if (frame[FRAME_ID] == QUERY_RESPONSE && frame[FRAME_EXTRA] == devc->type
             && !g_strcmp0((char *) &frame[QUERY_NAME], devc->description)) {
@@ -481,8 +481,9 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
                                 devc->acquiring = TRUE;
                 }
         } else {
-                sr_err("Failed to start acquisition: Frame ID: 0x%x, type %c, name %s",
-                       frame[FRAME_ID], frame[FRAME_EXTRA], &frame[QUERY_NAME]);
+                sr_info("Failed to start acquisition: Frame length: 0d%x, ID: 0x%x, type 0x%x",
+                        GINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]),
+                        frame[FRAME_ID], frame[FRAME_EXTRA]);
         }
 
         g_free(frame);
@@ -499,11 +500,12 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 
         if ((devc = sdi->priv))
                 devc->acquiring = FALSE;
-        frame = jyetech_dso112a_send_command(sdi->conn, COMMAND_STOP, STOP_EXTRA);
+        frame = jyetech_dso112a_send_command(sdi, COMMAND_STOP, STOP_EXTRA);
         std_session_send_df_end(sdi);
         serial_source_remove(sdi->session, sdi->conn);
 
         if (frame) {
+                sr_warn("Stop command failed.");
                 g_free(frame);
                 return SR_OK;
         }
