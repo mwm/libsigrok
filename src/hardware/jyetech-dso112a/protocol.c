@@ -224,8 +224,7 @@ SR_PRIV void jyetech_dso112a_dev_context_free(void *p)
 {
         struct dev_context *devc = p;
 
-        if (devc->params)
-                g_free(devc->params);
+        g_free(devc->params);
         g_free(devc->description);
         g_free(devc);
 }
@@ -252,9 +251,7 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
                         g_free(frame);
                 } else {
                         sr_spew("Got parameters");
-                        if (devc->params) {
-                                g_free(devc->params);
-                        }
+                        g_free(devc->params);
                         /* We right this back with changes, so set that up */
                         frame[FRAME_ID] = COMMAND_SET;
                         frame[FRAME_EXTRA] = SET_EXTRA;
@@ -317,9 +314,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                 frame = read_frame(sdi);
                 if (!devc->acquiring) {
                         sr_warn("Event handler called while not capturing data.");
-                        if (frame) {
-                                g_free(frame);
-                        }
+                        g_free(frame);
                         frame = jyetech_dso112a_send_command(
                                      sdi, COMMAND_STOP, STOP_EXTRA); 
                 } else if (!frame) {
@@ -353,6 +348,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         analog.num_samples);
                         sr_sw_limits_update_samples_read(
                                 &devc->limits, analog.num_samples);
+                        
                         memcpy(devc->data, &frame[CAPTURE_DATA], 
                                analog.num_samples);
                         analog.data = &devc->data;
@@ -370,8 +366,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                 sdi->driver->dev_acquisition_stop(sdi);
                         }
                 }
-                if (frame)
-                        g_free(frame);
+                g_free(frame);
         }
         return TRUE;
 }
