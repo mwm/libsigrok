@@ -330,13 +330,36 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         sr_info("Bad frame id 0x%x during capture.",
                                frame[FRAME_ID]);
                 } else {
-                        sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+                        sr_analog_init(&analog, &encoding, &meaning, &spec, 5);
                         encoding.unitsize = sizeof(uint8_t);
-                        encoding.is_signed = FALSE;
                         encoding.is_float = FALSE;
                         value_p = jyetech_dso112a_get_vdiv(devc);
                         encoding.scale.p = (*value_p)[0];
                         encoding.scale.q = 25 * (*value_p)[1];
+                        if ((*value_p)[1] == 1000) {
+                                switch ((*value_p)[0]) {
+                                default: case 2:
+                                        spec.spec_digits = 5;
+                                        break;
+                                case 5: case 10: case 20:
+                                        spec.spec_digits = 4;
+                                        break;
+                                case 50: case 100: case 200:
+                                        spec.spec_digits = 3;
+                                        break;
+                                case 500: spec.spec_digits = 2;
+                                        break;
+                                }
+                        } else {
+                                switch ((*value_p)[0]) {
+                                default: case 1: case 2:
+                                        spec.spec_digits = 2;
+                                        break;
+                                case 5: case 10: case 20:
+                                        spec.spec_digits = 1;
+                                        break;
+                                }
+                        }
                         encoding.offset.p =
                                 -(GINT16_FROM_LE(*(int16_t *)
                                                  &devc->params[PARAM_VPOS]) + 128)
