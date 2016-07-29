@@ -504,12 +504,13 @@ static int dev_acquisition_stop(struct sr_dev_inst *sdi)
         std_session_send_df_end(sdi);
         serial_source_remove(sdi->session, sdi->conn);
 
-        if (frame) {
+        if (!frame) {
                 sr_warn("Stop command failed.");
+                return SR_ERR_IO;
+        } else {
                 g_free(frame);
                 return SR_OK;
         }
-        return SR_ERR_IO;
 }
 
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info = {

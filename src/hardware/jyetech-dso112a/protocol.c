@@ -66,13 +66,24 @@ static int get_stuffed(const struct sr_dev_inst *sdi)
 static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 {
         int i, c, id, lo_byte, hi_byte;
+        struct sr_serial_dev_inst *port;
         uint16_t frame_size;
         uint8_t *frame = NULL;
         
-        c = get_stuffed(sdi);
-        if (c != SYNC) {
-             sr_warn("Got 0x%x looking for SYNC byte.", c);
-        } else if ((id = get_stuffed(sdi)) >= 0) {
+        
+        if (!(port = sdi->conn)) {
+                sr_err("read_frame called without a serial port.");
+                return NULL;
+        }
+
+        do {
+                if (serial_read_blocking(port, &c, 1, TIMEOUT) == -1) {
+                        sr_err("Timeout looking for frame header.");
+                        return NULL;
+                }
+                sr_spew("Got 0x%x looking for SYNC byte.", c);
+        } while (c != SYNC) ;
+        if ((id = get_stuffed(sdi)) >= 0) {
                 lo_byte = get_stuffed(sdi);
                 if (lo_byte >= 0) {
                         hi_byte = get_stuffed(sdi);
@@ -305,12 +316,13 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         devc->limit_frames);
                 frame = read_frame(sdi);
                 if (!devc->acquiring) {
+                        sr_warn("Event handler called while not capturing data.");
                         if (frame) {
                                 g_free(frame);
                         }
                         frame = jyetech_dso112a_send_command(
                                      sdi, COMMAND_STOP, STOP_EXTRA); 
-                } else if (!frame) {	// Hmm. We seem to see this after every packet.
+                } else if (!frame) {
                         sr_info("Buggy IO capture error.");
                 } else if (frame[FRAME_ID] != SAMPLE_FRAME) {
                         sr_info("Bad frame id 0x%x during capture.",
