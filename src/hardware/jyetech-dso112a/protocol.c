@@ -58,6 +58,9 @@ static int get_stuffed(const struct sr_dev_inst *sdi)
                         sr_info("Timeout during read.");
                         return -1;
                 }
+                if (!devc->buffer) {
+                     sr_dbg("Discarded stuffed 0 byte.");
+                }
         }
         sr_spew("Read byte 0x%x", c);
         return c;
@@ -66,8 +69,8 @@ static int get_stuffed(const struct sr_dev_inst *sdi)
 static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 {
         int i, c, id, lo_byte, hi_byte;
+        unsigned frame_size;
         struct sr_serial_dev_inst *port;
-        uint16_t frame_size;
         uint8_t *frame = NULL;
         
         
@@ -77,7 +80,8 @@ static uint8_t *read_frame(const struct sr_dev_inst *sdi)
         }
 
         do {
-                if (serial_read_blocking(port, &c, 1, TIMEOUT) == -1) {
+                sr_spew("Starting read for sync.");
+                if (serial_read_blocking(port, &c, 1, TIMEOUT) < 1) {
                         sr_err("Timeout looking for frame header.");
                         return NULL;
                 }
@@ -96,6 +100,7 @@ static uint8_t *read_frame(const struct sr_dev_inst *sdi)
                                 for (i = 3; i < frame_size;) {
                                         c = get_stuffed(sdi);
                                         if (c < 0) {
+                                                sr_info("Timed out reading capture data.");
                                                 g_free(frame);
                                                 return NULL;
                                         }
@@ -108,29 +113,30 @@ static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 }
 
 static uint8_t *raw_read_frame(struct sr_serial_dev_inst *port) {
-        uint8_t c, id, lo_byte, hi_byte;
-        uint16_t frame_size;
+        int frame_size;
+        uint8_t c, bytes[3];
         uint8_t *frame = NULL;
         
-        if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1) {
-                sr_info("Timeout during read.");
-        } else if (c != SYNC) {
-                sr_warn("Got 0x%x looking for SYNC byte.", c);
-        } else if (serial_read_blocking(port, &id, 1, TIMEOUT) != 1 ||
-                   serial_read_blocking(port, &lo_byte, 1, TIMEOUT) != 1 ||
-                   serial_read_blocking(port, &hi_byte, 1, TIMEOUT) != 1) {
-                sr_info("Timeout during read.");
+        do {
+                if (serial_read_blocking(port, &c, 1, TIMEOUT) != 1) {
+                        sr_info("Timeout looking for frame header.");
+                        return NULL;
+                }
+                sr_spew("Got 0x%x looking for SYNC byte.", c);
+        } while (c != SYNC) ;
+
+        if (serial_read_blocking(
+                    port, &bytes, sizeof(bytes), TIMEOUT) != sizeof(bytes)) {
+                sr_info("Timeout frame header read.");
         } else {
-                frame_size = lo_byte + 256 * hi_byte;
+                frame_size = GUINT16_FROM_LE(*(uint16_t *) &bytes[1]);
                 frame = g_malloc(frame_size);
-                frame[FRAME_ID] = id;
-                frame[FRAME_SIZE]     = lo_byte;
-                frame[FRAME_SIZE + 1] = hi_byte;
-                frame_size -= 3;
+                memcpy(frame, bytes, sizeof(bytes));
+                frame_size -= sizeof(bytes);
                 if (serial_read_blocking(
-                            port, &frame[FRAME_EXTRA], frame_size, TIMEOUT)
+                            port, &frame[FRAME_DATA], frame_size, TIMEOUT)
                     != frame_size) {
-                        sr_info("Timeout during read.");
+                        sr_info("Timeout during frame read.");
                         g_free(frame);
                         frame = NULL;
                 }
@@ -200,8 +206,8 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
         uint16_t frame_size;
         struct dev_context *device;
         
-        if (frame[FRAME_ID] != QUERY_RESPONSE || frame[FRAME_EXTRA] != 'O') {
-                sr_dbg("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[FRAME_ID], frame[FRAME_EXTRA]);
+        if (frame[FRAME_ID] != QUERY_RESPONSE || frame[FRAME_DATA] != 'O') {
+                sr_dbg("Frame id 0x%x not a query response, or device type %c not an oscilloscope", frame[FRAME_ID], frame[FRAME_DATA]);
                 return NULL;
         }
                 
@@ -214,7 +220,7 @@ SR_PRIV struct dev_context *jyetech_dso112a_dev_context_new(uint8_t *frame)
 
         /* This is indeed a frame describing an oscilloscope */
         device = g_malloc0(sizeof(struct dev_context));
-        device->type = frame[FRAME_EXTRA];
+        device->type = frame[FRAME_DATA];
         frame[frame_size - 1] = 0;
         device->description = g_strdup((char *) &frame[QUERY_NAME]);
         return device;
@@ -242,11 +248,11 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
         }
         
         status = SR_ERR_IO;
-        sr_spew("getting parameters");
+        sr_dbg("getting parameters");
         if ((frame = jyetech_dso112a_send_command(
                      sdi, COMMAND_GET, PARAM_EXTRA))) {
                 if (frame[FRAME_ID] != GET_RESPONSE 
-                    || frame[FRAME_EXTRA] != PARM_RESP_EXTRA) {
+                    || frame[FRAME_DATA] != PARM_RESP_EXTRA) {
                         sr_info("Got something other than parameters");
                         g_free(frame);
                 } else {
@@ -254,7 +260,7 @@ SR_PRIV int jyetech_dso112a_get_parameters(const struct sr_dev_inst *sdi)
                         g_free(devc->params);
                         /* We right this back with changes, so set that up */
                         frame[FRAME_ID] = COMMAND_SET;
-                        frame[FRAME_EXTRA] = SET_EXTRA;
+                        frame[FRAME_DATA] = SET_EXTRA;
                         frame[PARAM_TRIGMODE] = 0;
                         devc->params = frame;
                         status = SR_OK;
@@ -335,13 +341,13 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                                                  &devc->params[PARAM_VPOS]) + 128)
                                 * (*value_p)[0];
                         encoding.offset.q = 25 * (*value_p)[1];
-                        if (frame[FRAME_EXTRA] == SINGLE_SAMPLE) {
+                        if (frame[FRAME_DATA] == SINGLE_SAMPLE) {
                                 analog.num_samples = 1;
-                        } else if (frame[FRAME_EXTRA] == BULK_SAMPLE) {
+                        } else if (frame[FRAME_DATA] == BULK_SAMPLE) {
                                 analog.num_samples = GUINT16_FROM_LE(
                                         *(uint16_t *) &frame[FRAME_SIZE]) - 8;
                         } else {
-                                sr_info("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_EXTRA]);
+                                sr_info("Got 0xC0 frame type=0x%c while looking for sample.", frame[FRAME_DATA]);
                                 return TRUE;
                         }
                         sr_dbg("Got capture frame with %d samples",

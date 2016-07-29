@@ -81,7 +81,7 @@
 /* Frame offsets */
 #define FRAME_ID	0
 #define FRAME_SIZE	1
-#define FRAME_EXTRA	3
+#define FRAME_DATA	3
 
 #define CAPTURE_DATA	4
 
