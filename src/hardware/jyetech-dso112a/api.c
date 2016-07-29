@@ -470,7 +470,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
                 return SR_ERR_IO;
         }
 
-        if (frame[FRAME_ID] == QUERY_RESPONSE && frame[FRAME_EXTRA] == devc->type
+        if (frame[FRAME_ID] == QUERY_RESPONSE && frame[FRAME_DATA] == devc->type
             && !g_strcmp0((char *) &frame[QUERY_NAME], devc->description)) {
                 status = serial_source_add(
                         sdi->session, sdi->conn, G_IO_IN, 50, 
@@ -483,7 +483,7 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
         } else {
                 sr_info("Failed to start acquisition: Frame length: 0d%x, ID: 0x%x, type 0x%x",
                         GINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]),
-                        frame[FRAME_ID], frame[FRAME_EXTRA]);
+                        frame[FRAME_ID], frame[FRAME_DATA]);
         }
 
         g_free(frame);

@@ -68,8 +68,9 @@ static int get_stuffed(const struct sr_dev_inst *sdi)
 
 static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 {
-        int i, c, id, lo_byte, hi_byte;
-        unsigned frame_size;
+        uint8_t c;
+        int i, id, lo_byte, hi_byte;
+        int frame_size;
         struct sr_serial_dev_inst *port;
         uint8_t *frame = NULL;
         
