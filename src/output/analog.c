@@ -161,7 +161,8 @@ static int cleanup(struct sr_output *o)
 	ctx = o->priv;
 
 	g_ptr_array_free(ctx->channellist, 1);
-	g_variant_unref(options[0].def);
+        if (!options[0].def)
+                g_variant_unref(options[0].def);
 	g_slist_free_full(options[0].values, (GDestroyNotify)g_variant_unref);
 	g_free(ctx->fdata);
 	g_free(ctx);
