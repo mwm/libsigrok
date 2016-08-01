@@ -29,13 +29,14 @@
 #define LOG_PREFIX "output/gnuplot"
 
 struct context {
-	unsigned int num_enabled_channels;
-        unsigned int num_analog_channels;
+	unsigned num_enabled_channels;
+        unsigned num_analog_channels;
 	uint64_t samplerate;
 	uint64_t samplecount;
         gboolean inframe;
 	uint8_t *prevsample;
-        float *analog_vals;
+        float *analog_values;
+        struct sr_channel **analog_channels;
 	struct sr_channel **channels;
 };
 
@@ -51,7 +52,7 @@ static int init(struct sr_output *o, GHashTable *options)
 	struct context *ctx;
 	struct sr_channel *ch;
 	GSList *l;
-	unsigned int i;
+	unsigned i;
 
 	(void)options;
 
@@ -75,16 +76,25 @@ static int init(struct sr_output *o, GHashTable *options)
 		sr_err("No channels enabled.");
 		return SR_ERR;
 	}
+
 	ctx->channels = g_malloc(
                 sizeof(struct sr_channel *) * ctx->num_enabled_channels);
+	ctx->analog_channels = g_malloc(
+                sizeof(struct sr_channel *) * ctx->num_analog_channels);
+	ctx->analog_values = g_malloc(sizeof(float) * ctx->num_analog_channels);
+
 
 	/* Once more to map the enabled channels. */
 	for (i = 0, l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
-		if (ch->enabled)
-                        ctx->channels[i++] = ch;
-	}
-
+		if (ch->enabled) {
+                        if (ch->type == SR_CHANNEL_LOGIC ||
+                            ch->type == SR_CHANNEL_ANALOG)
+                                ctx->channels[i++] = ch;
+                        if (ch->type == SR_CHANNEL_ANALOG)
+                                ctx->analog_channels[i++] = ch;
+                }
+        }
 	return SR_OK;
 }
 
@@ -95,7 +105,7 @@ static GString *gen_header(
 	struct sr_channel *ch;
 	GVariant *gvar;
 	GString *header;
-	unsigned int num_channels, i;
+	unsigned num_channels, i;
 	char *samplerate_s;
 
 	ctx = o->priv;
@@ -144,7 +154,7 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 	GSList *l, *channels;
 	struct context *ctx;
 	const uint8_t *sample;
-	unsigned int curbit, idx, i, j, k, numch, num_samples, nums, ret;
+	unsigned curbit, idx, i, j, k, numch, num_samples, nums, ret;
         float *data;
 
 	*out = NULL;
@@ -161,15 +171,33 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 			ctx->samplerate = g_variant_get_uint64(src->data);
 		}
                 break;
+
         case SR_DF_HEADER:
                 *out = gen_header(o, packet->payload);
                 break;
+
         case SR_DF_FRAME_BEGIN:
-                sr_dbg("Saw frame begin");
-                memset(ctx->analog_vals, 0,
+                memset(ctx->analog_values, 0,
                        sizeof(float) * ctx->num_analog_channels);
                 ctx->inframe = TRUE;
                 break;
+
+        case SR_DF_FRAME_END:
+                *out = g_string_sized_new(512); 
+                ctx->samplecount += 1;
+                g_string_append_printf(*out, "%" PRIu64 "\t", ctx->samplecount);
+		for (i = 0, j = 0; i < ctx->num_enabled_channels; i++) {
+			if (ctx->channels[i]->type == SR_CHANNEL_ANALOG) {
+				g_string_append_printf(*out, "%f ",
+							ctx->analog_values[j++]);
+			}
+		}
+		g_string_truncate(*out, (*out)->len - 1);
+		g_string_append_printf(*out, "\n");
+
+		ctx->inframe = FALSE;
+		break;
+        
 	case SR_DF_LOGIC:
                 logic = packet->payload;
 
@@ -179,7 +207,7 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
                 }
 
                 *out = g_string_sized_new(512); 
-               for (i = 0; i <= logic->length - logic->unitsize; i += logic->unitsize) {
+                for (i = 0; i <= logic->length - logic->unitsize; i += logic->unitsize) {
                         sample = logic->data + i;
                         ctx->samplecount++;
 
@@ -205,6 +233,7 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
                         g_string_append_printf(*out, "\n");
                 }
                 break;
+
         case SR_DF_ANALOG:
                 analog = packet->payload;
 		channels = analog->meaning->channels;
@@ -214,34 +243,48 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 		ret = sr_analog_to_float(analog, data);
 		if (ret != SR_OK)
 			return ret;
-
-                k = 0;
-                l = NULL;
                 nums = (num_samples > numch) ? num_samples / numch : 1;
-                *out = g_string_sized_new(512);
-                
-                for (i = 0; i < nums; i += 1) {
-                        ctx->samplecount += 1;
 
-                        /* The first column is a counter (needed for gnuplot). */
-                        g_string_append_printf(
-                                *out, "%" PRIu64 "\t", ctx->samplecount);
-
-                        for (j = 0; j < ctx->num_enabled_channels; j += 1) {
-                                if (ctx->channels[j]->type == SR_CHANNEL_ANALOG) {
-                                        if (!l)
-                                                l = channels;
-                                        if (ctx->channels[j] == l->data) {
-                                                g_string_append_printf(
-                                                        *out, "%f ", data[k++]);
-                                        }
-                                        l = l->next;
+                l = channels;
+                k = 0;
+                if (ctx->inframe) {
+                        /* Save the data until we have a complete frame */
+                        for (i = 0; i < nums; i += 1) {
+                                for (j = 0; j < ctx->num_analog_channels; j++) {
+                                        if (ctx->analog_channels[j] == l->data)
+                                                ctx->analog_values[j] = data[k++];
                                 }
+                                l = l->next;
                         }
-                        g_string_truncate(*out, (*out)->len - 1);
-                        g_string_append_printf(*out, "\n");
-                }
+                } else {
+                        k = 0;
+                        l = NULL;
+                        *out = g_string_sized_new(512);
+                
+                        for (i = 0; i < nums; i += 1) {
+                                ctx->samplecount += 1;
 
+                                g_string_append_printf(
+                                        *out, "%" PRIu64 "\t", ctx->samplecount);
+
+                                for (j = 0; j < ctx->num_enabled_channels; j += 1)
+                                {
+                                        if (ctx->channels[j]->type
+                                            == SR_CHANNEL_ANALOG) {
+                                                if (!l)
+                                                        l = channels;
+                                                if (ctx->channels[j] == l->data) {
+                                                        g_string_append_printf(
+                                                                *out, "%f ",
+                                                                data[k++]);
+                                                }
+                                                l = l->next;
+                                        }
+                                }
+                                g_string_truncate(*out, (*out)->len - 1);
+                                g_string_append_printf(*out, "\n");
+                        }
+                }
                 break;
         }
         return SR_OK;
@@ -255,8 +298,11 @@ static int cleanup(struct sr_output *o)
 		return SR_ERR_BUG;
 	ctx = o->priv;
 	g_free(ctx->channels);
+        g_free(ctx->analog_channels);
 	g_free(ctx->prevsample);
+        g_free(ctx->analog_values);
 	g_free(ctx);
+        o->priv = NULL;
 
 	return SR_OK;
 }
