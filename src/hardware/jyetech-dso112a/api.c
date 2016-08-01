@@ -227,6 +227,7 @@ static int config_get(uint32_t key, GVariant **data,
 	switch (key) {
         case SR_CONF_CONTINUOUS:
                 *data = g_variant_new_boolean(devc->params[PARAM_TRIGMODE] != 2);
+                return SR_OK;
         case SR_CONF_LIMIT_FRAMES:
                 *data = g_variant_new_uint64(devc->limit_frames);
                 return SR_OK;
