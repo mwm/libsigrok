@@ -392,7 +392,7 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         g_slist_free(analog.meaning->channels);
                         if (sr_sw_limits_check(&devc->limits) ||
                             (devc->limit_frames 
-                             && devc->num_frames++ >= devc->limit_frames)) {
+                             && ++devc->num_frames >= devc->limit_frames)) {
                                 sdi->driver->dev_acquisition_stop(sdi);
                         }
                 }
