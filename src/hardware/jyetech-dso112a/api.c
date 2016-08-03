@@ -201,16 +201,6 @@ static int dev_open(struct sr_dev_inst *sdi)
         return status;
 }
 
-static int dev_close(struct sr_dev_inst *sdi)
-{
-        struct sr_serial_dev_inst *serial = sdi->conn;
-
-	if (sdi->status != SR_ST_ACTIVE)
-		return SR_ERR_DEV_CLOSED;
-
-	sr_info("Closing device %s.", serial->port);
-        return serial_close(serial);
-}
 
 static int config_get(uint32_t key, GVariant **data,
 	const struct sr_dev_inst *sdi, const struct sr_channel_group *cg)
@@ -493,25 +483,38 @@ static int dev_acquisition_start(const struct sr_dev_inst *sdi)
 
 static int dev_acquisition_stop(struct sr_dev_inst *sdi)
 {
+        int ret;
         uint8_t *frame;
         struct dev_context *devc;
 
-	if (sdi->status != SR_ST_ACTIVE)
+	if (sdi->status != SR_ST_ACTIVE) {
+		sr_err("Device inactive, can't stop acquisition.");
 		return SR_ERR_DEV_CLOSED;
+        }
 
         if ((devc = sdi->priv))
                 devc->acquiring = FALSE;
-        frame = jyetech_dso112a_send_command(sdi, COMMAND_STOP, STOP_EXTRA);
-        std_session_send_df_end(sdi);
-        serial_source_remove(sdi->session, sdi->conn);
-
-        if (!frame) {
+        
+        if (!(frame = 
+              jyetech_dso112a_send_command(sdi, COMMAND_STOP, STOP_EXTRA))) {
                 sr_warn("Stop command failed.");
                 return SR_ERR_IO;
-        } else {
-                g_free(frame);
-                return SR_OK;
         }
+        g_free(frame);
+
+	if ((ret = serial_source_remove(sdi->session, sdi->conn)) < 0) {
+		sr_err("Failed to remove source: %d.", ret);
+		return ret;
+	}
+
+	if ((ret = sdi->driver->dev_close(sdi)) < 0) {
+		sr_err("Failed to close device: %d.", ret);
+		return ret;
+	}
+
+	std_session_send_df_end(sdi);
+
+	return SR_OK;
 }
 
 SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info = {
@@ -527,7 +530,7 @@ SR_PRIV struct sr_dev_driver jyetech_dso112a_driver_info = {
 	.config_set = config_set,
 	.config_list = config_list,
 	.dev_open = dev_open,
-	.dev_close = dev_close,
+	.dev_close = std_serial_dev_close,
 	.dev_acquisition_start = dev_acquisition_start,
 	.dev_acquisition_stop = dev_acquisition_stop,
 	.context = NULL,
