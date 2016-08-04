@@ -69,7 +69,7 @@ static int get_stuffed(const struct sr_dev_inst *sdi)
 static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 {
         uint8_t c;
-        int i, id, lo_byte, hi_byte;
+        int ch, i, id, lo_byte, hi_byte;
         int frame_size;
         struct sr_serial_dev_inst *port;
         uint8_t *frame = NULL;
@@ -99,13 +99,13 @@ static uint8_t *read_frame(const struct sr_dev_inst *sdi)
                                 frame[FRAME_SIZE]     = lo_byte;
                                 frame[FRAME_SIZE + 1] = hi_byte;
                                 for (i = 3; i < frame_size;) {
-                                        c = get_stuffed(sdi);
-                                        if (c < 0) {
+                                        ch = get_stuffed(sdi);
+                                        if (ch < 0) {
                                                 sr_info("Timed out reading capture data.");
                                                 g_free(frame);
                                                 return NULL;
                                         }
-                                        frame[i++] = c;
+                                        frame[i++] = ch;
                                 }
                         }
                 }
@@ -114,7 +114,7 @@ static uint8_t *read_frame(const struct sr_dev_inst *sdi)
 }
 
 static uint8_t *raw_read_frame(struct sr_serial_dev_inst *port) {
-        int frame_size;
+        uint16_t frame_size;
         uint8_t c, bytes[3];
         uint8_t *frame = NULL;
         
@@ -149,12 +149,31 @@ static uint8_t *raw_read_frame(struct sr_serial_dev_inst *port) {
 static int send_frame(
         struct sr_serial_dev_inst *port, uint8_t *frame)
 {
-        int8_t sync = SYNC;
+        uint8_t sync = SYNC, zero = 0;
+        uint16_t p = 0;
         uint16_t size = GUINT16_FROM_LE(*(uint16_t *) &frame[FRAME_SIZE]);
 
-        if (serial_write_blocking(port, &sync, 1, TIMEOUT) == 1
-            && serial_write_blocking(port, frame, size, TIMEOUT) == size)
+        if (serial_write_blocking(port, &sync, 1, TIMEOUT) == 1) {
+                while (p < size) {
+                        p += 1;
+                        if (frame[p - 1] == SYNC) {
+                                if (serial_write_blocking(
+                                            port, frame, p, TIMEOUT) != p ||
+                                    serial_write_blocking(
+                                            port, &zero, 1, TIMEOUT) != 1) {
+                                        break;
+                                }
+                                sr_dbg("Stuffed a zero byte");
+                                frame += p;
+                                size -= p;
+                                p = 0;
+                        }
+                }
+        }
+        if (p == size && 
+            serial_write_blocking(port, frame, size, TIMEOUT) == size) {
                 return SR_OK;
+        }
         sr_info("Timeout during write.");
         return SR_ERR_IO;
 }
