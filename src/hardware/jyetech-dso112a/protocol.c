@@ -395,8 +395,11 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         }
                         sr_dbg("Got capture frame with %d samples",
                                analog.num_samples);
-                        packet.type = SR_DF_FRAME_BEGIN;
-                        sr_session_send(sdi, &packet);
+                        if (analog.num_samples > 1) {
+                                // If we have multiple samples, it's a frame
+                                packet.type = SR_DF_FRAME_BEGIN;
+                                sr_session_send(sdi, &packet);
+                        }
                         sr_sw_limits_update_samples_read(
                                 &devc->limits, analog.num_samples);
                         
@@ -411,8 +414,10 @@ SR_PRIV int jyetech_dso112a_receive_data(int fd, int revents, void *cb_data)
                         packet.payload = &analog;
                         sr_session_send(sdi, &packet);
                         g_slist_free(analog.meaning->channels);
-                        packet.type = SR_DF_FRAME_END;
-                        sr_session_send(sdi, &packet);
+                        if (analog.num_samples > 1) {
+                                packet.type = SR_DF_FRAME_END;
+                                sr_session_send(sdi, &packet);
+                        }
                         if (sr_sw_limits_check(&devc->limits) ||
                             (devc->limit_frames 
                              && ++devc->num_frames >= devc->limit_frames)) {
