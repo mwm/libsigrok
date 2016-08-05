@@ -16,6 +16,31 @@
  * You should have received a copy of the GNU General Public License
  * along with this program; if not, write to the Free Software
  * Foundation, Inc., 51 Franklin St, Fifth Floor, Boston, MA  02110-1301 USA
+ *
+ * Options and their values:
+ *
+ * gnuplot: Write out a gnuplot intrerpreter script (.gpi file) to plot
+ *          the datafile using the parameters given.
+ *
+ * value:   The string to use to separate values in a record. Defaults to ','.
+ *
+ * record:  The string to use to separate records. Default is newline. gnuplot
+ *          files must use newline.
+ *
+ * frame:   The string to use when a frame ends. The default is a blank line.
+ *          This may confuse some csv parsers, but it makes gnuplot happy.
+ *
+ * comment: The string that starts a comment line. Defaults to ';'.
+ *
+ * header:  Print header comment with capture metadata.
+ *
+ * label:   Add a line of channel labels as the first line of output.
+ *
+ * time:    Whether or not the first column should include the time the sample
+ *          was taken. Defaults to TRUE.
+ *
+ * dedup:   Don't output duplicate rows. Defaults to TRUE. If time is off, then
+ *          this is forced to be off.
  */
 
 #include <config.h>
@@ -28,26 +53,34 @@
 #define LOG_PREFIX "output/csv"
 
 struct context {
-	unsigned int num_enabled_channels;
-	uint64_t samplerate;
-	char separator;
-	gboolean header_done;
+        /* Options */
+        const char *gnuplot;
+	const char *value;
+        const char *record;
+        const char *frame;
+        const char *comment;
+        gboolean header;
+        gboolean label;
+        gboolean time;
+        gboolean dedup;
+
+        /* Plot data */
+        uint16_t type;
+	unsigned num_channels;
 	struct sr_channel **channels;
 
-	/* For analog measurements split into frames, not packets. */
-	struct sr_channel **analog_channels;
-	float *analog_vals; /* Analog values stored until the end of the frame. */
-	unsigned int num_analog_channels;
-	gboolean inframe;
+        /* Metadata */
+	uint64_t period;
+        uint64_t sample_time;
+        uint8_t *prevsample;
+        float *analog_samples;
+        uint32_t channels_seen, num_samples;
+        const char *xlabel;    // Don't free: will point to a static string.
+        const char *title;     // Don't free: will point into the driver structure.
 };
 
 /*
  * TODO:
- *  - Option to specify delimiter character and/or string.
- *  - Option to (not) print metadata as comments.
- *  - Option to specify the comment character(s), e.g. # or ; or C/C++-style.
- *  - Option to (not) print samplenumber / time as extra column.
- *  - Option to "compress" output (only print changed samples, VCD-like).
  *  - Option to print comma-separated bits, or whole bytes/words (for 8/16
  *    channel LAs) as ASCII/hex etc. etc.
  *  - Trigger support.
@@ -55,10 +88,11 @@ struct context {
 
 static int init(struct sr_output *o, GHashTable *options)
 {
+ 	int i;
+        unsigned analog_channels, logic_channels;
 	struct context *ctx;
 	struct sr_channel *ch;
 	GSList *l;
-	int i, j;
 
 	(void)options;
 
@@ -67,34 +101,75 @@ static int init(struct sr_output *o, GHashTable *options)
 
 	ctx = g_malloc0(sizeof(struct context));
 	o->priv = ctx;
-	ctx->separator = ',';
 
+        /* Options */
+        ctx->gnuplot = g_strdup(
+                g_variant_get_string(
+                        g_hash_table_lookup(options, "gnuplot"), NULL));
+	ctx->value = g_strdup(
+                g_variant_get_string(g_hash_table_lookup(options, "value"), NULL));
+	ctx->record = g_strdup(
+                g_variant_get_string(
+                        g_hash_table_lookup(options, "record"), NULL));
+	ctx->frame = g_strdup(
+                g_variant_get_string(g_hash_table_lookup(options, "frame"), NULL));
+	ctx->comment = g_strdup(
+                g_variant_get_string(
+                        g_hash_table_lookup(options, "comment"), NULL));
+	ctx->header = g_variant_get_boolean(
+                g_hash_table_lookup(options, "header"));
+	ctx->time = g_variant_get_boolean(g_hash_table_lookup(options, "time"));
+	ctx->label = g_variant_get_boolean(g_hash_table_lookup(options, "label"));
+	ctx->dedup = g_variant_get_boolean(
+             g_hash_table_lookup(options, "dedup"));
+        ctx->dedup &= ctx->time;
+
+        if (*ctx->gnuplot && !strcmp(ctx->record, "\n")) {
+                sr_warn("gnuplot record separator must be newline");
+                g_free((gpointer) ctx->record);
+                ctx->record = g_strdup("\n");
+        }
+
+        sr_dbg("Gnuplot = '%s', value = '%s', record = '%s', frame = '%s'",
+               ctx->gnuplot, ctx->value, ctx->record, ctx->frame);
+        sr_dbg("comment = '%s', header = %d, time = %d, dedup = %d",
+               ctx->comment, ctx->header, ctx->time, ctx->dedup);
+
+        analog_channels = logic_channels = 0;
 	/* Get the number of channels, and the unitsize. */
 	for (l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
 		if (ch->enabled) {
-			if (ch->type == SR_CHANNEL_LOGIC ||
-			    ch->type == SR_CHANNEL_ANALOG)
-				ctx->num_enabled_channels++;
+			if (ch->type == SR_CHANNEL_LOGIC)
+				logic_channels += 1;
 			if (ch->type == SR_CHANNEL_ANALOG)
-				ctx->num_analog_channels++;
+				analog_channels += 1;
 		}
 	}
-	ctx->channels = g_malloc(sizeof(struct sr_channel *)
-					* ctx->num_enabled_channels);
-	ctx->analog_channels = g_malloc(sizeof(struct sr_channel *)
-					* ctx->num_analog_channels);
-	ctx->analog_vals = g_malloc(sizeof(float) * ctx->num_analog_channels);
+        if (analog_channels * logic_channels) {
+                sr_err("Can not output both logic and analog values in one file");
+                return SR_ERR_ARG;
+        }
+        if (analog_channels) {
+                sr_info("Outputting %d analog values", analog_channels);
+                ctx->num_channels = analog_channels;
+                ctx->type = SR_CHANNEL_ANALOG;
+        }
+        if (logic_channels) {
+                sr_info("Outputting %d logic values", logic_channels);
+                ctx->num_channels = logic_channels;
+                ctx->type = SR_CHANNEL_LOGIC;
+        }
+	ctx->channels = g_malloc(
+                sizeof(struct sr_channel *) * ctx->num_channels);
+
 
 	/* Once more to map the enabled channels. */
-	for (i = 0, l = o->sdi->channels, j = 0; l; l = l->next) {
+	for (i = 0, l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
 		if (ch->enabled) {
-			if (ch->type == SR_CHANNEL_LOGIC ||
-			    ch->type == SR_CHANNEL_ANALOG)
+			if (ch->type == ctx->type)
 				ctx->channels[i++] = ch;
-			if (ch->type == SR_CHANNEL_ANALOG)
-				ctx->analog_channels[j++] = ch;
 		}
 
 	}
@@ -102,106 +177,264 @@ static int init(struct sr_output *o, GHashTable *options)
 	return SR_OK;
 }
 
-static GString *gen_header(const struct sr_output *o)
+static const char *xlabels[] = {
+        "samples", "milliseconds", "microseconds", "nanoseconds", "picoseconds",
+        "femtoseconds", "attoseconds"
+} ;
+
+static GString *gen_header(
+        const struct sr_output *o, const struct sr_datafeed_header *hdr)
 {
 	struct context *ctx;
 	struct sr_channel *ch;
 	GVariant *gvar;
 	GString *header;
 	GSList *l;
-	time_t t;
-	int num_channels, i;
+	unsigned num_channels, i;
+        uint64_t samplerate = 0, sr;
 	char *samplerate_s;
 
 	ctx = o->priv;
 	header = g_string_sized_new(512);
 
+        if (ctx->period == 0) {
+                if (sr_config_get(o->sdi->driver, o->sdi, NULL,
+                                  SR_CONF_SAMPLERATE, &gvar) == SR_OK) {
+                        samplerate = g_variant_get_uint64(gvar);
+                        g_variant_unref(gvar);
+                }
+
+                i = 0;
+                sr = 1;
+                while (sr < samplerate) {
+                        i += 1;
+                        sr *= 1000;
+                }
+                if (samplerate)
+                        ctx->period = sr / samplerate;
+                if (i < ARRAY_SIZE(xlabels)) {
+                        ctx->xlabel = xlabels[i];
+                }
+                sr_info("Set sample period to %" PRIu64 " %s",
+                       ctx->period, ctx->xlabel);
+        }
+        ctx->title = o->sdi->driver->longname;
+
 	/* Some metadata */
-	t = time(NULL);
-	g_string_append_printf(header, "; CSV, generated by %s %s on %s",
-			PACKAGE_NAME, SR_PACKAGE_VERSION_STRING, ctime(&t));
+        if (ctx->header) {
+                g_string_append_printf(
+                        header, "%s CSV generated by %s %s\n%s from %s on %s",
+                        ctx->comment, PACKAGE_NAME, SR_PACKAGE_VERSION_STRING,
+                        ctx->comment, ctx->title, ctime(&hdr->starttime.tv_sec));
 
-	/* Columns / channels */
-	num_channels = g_slist_length(o->sdi->channels);
-	g_string_append_printf(header, "; Channels (%d/%d):",
-			ctx->num_enabled_channels, num_channels);
-	for (i = 0, l = o->sdi->channels; l; l = l->next, i++) {
-		ch = l->data;
-		if (ch->enabled &&
-		    (ch->type == SR_CHANNEL_LOGIC ||
-		     ch->type == SR_CHANNEL_ANALOG))
-			g_string_append_printf(header, " %s,", ch->name);
-	}
-	if (o->sdi->channels)
-		/* Drop last separator. */
-		g_string_truncate(header, header->len - 1);
-	g_string_append_printf(header, "\n");
-
-	if (ctx->samplerate == 0) {
-		if (sr_config_get(o->sdi->driver, o->sdi, NULL, SR_CONF_SAMPLERATE,
-				&gvar) == SR_OK) {
-			ctx->samplerate = g_variant_get_uint64(gvar);
-			g_variant_unref(gvar);
-		}
-	}
-	if (ctx->samplerate != 0) {
-		samplerate_s = sr_samplerate_string(ctx->samplerate);
-		g_string_append_printf(header, "; Samplerate: %s\n", samplerate_s);
-		g_free(samplerate_s);
-	}
+                /* Columns / channels */
+                num_channels = g_slist_length(o->sdi->channels);
+                g_string_append_printf(
+                        header, "%s Channels (%d/%d):", ctx->comment,
+                        ctx->num_channels, num_channels);
+                for (i = 0, l = o->sdi->channels; l; l = l->next, i++) {
+                        ch = l->data;
+                        if (ch->enabled && ch->type == ctx->type)
+                                g_string_append_printf(header, " %s,", ch->name);
+                }
+                if (o->sdi->channels)
+                        /* Drop last separator. */
+                        g_string_truncate(header, header->len - 1);
+                g_string_append_printf(header, "\n");
+                if (samplerate != 0) {
+                        samplerate_s = sr_samplerate_string(samplerate);
+                        g_string_append_printf(
+                                header, "%s Samplerate: %s\n", ctx->comment,
+                                samplerate_s);
+                        g_free(samplerate_s);
+                }
+        }
 
 	return header;
 }
 
-static void init_output(GString **out, struct context *ctx,
-			const struct sr_output *o)
+static void init_output(GString **out, struct context *ctx)
 {
-	if (!ctx->header_done) {
-		*out = gen_header(o);
-		ctx->header_done = TRUE;
-	} else {
-		*out = g_string_sized_new(512);
+        unsigned i;
+        *out = g_string_sized_new(512);
+	if (ctx->label) {
+                if (ctx->time) {
+                        g_string_append_printf(*out, "Time%s", ctx->value);
+                }
+                for (i = 0; i < ctx->num_channels; i += 1) {
+                        g_string_append_printf(
+                                *out, "%s%s", ctx->channels[i]->name, ctx->value);
+                }
+                /* Drop last separator. */
+                g_string_truncate(*out, (*out)->len - strlen(ctx->value));
+                g_string_append(*out, ctx->record);
 	}
+        ctx->label = FALSE;
 }
 
-static void handle_analog_frame(struct context *ctx, GSList *channels,
-		unsigned int num_samples, float *data)
+static void process_logic(
+        struct context *ctx, const struct sr_datafeed_logic *logic, GString **out)
 {
-	unsigned int numch, nums, i, j, s;
-	GSList *l;
-
-	numch = g_slist_length(channels);
-	if (num_samples > numch)
-		nums = num_samples / numch;
-	else
-		nums = 1;
-
-	s = 0;
-	l = channels;
-	for (i = 0; i < nums; i++) {
-		for (j = 0; j < ctx->num_analog_channels; j++) {
-			if (ctx->analog_channels[j] == l->data)
-				ctx->analog_vals[j] = data[s++];
-		}
-		l = l->next;
-	}
-}
-
-static int receive(const struct sr_output *o, const struct sr_datafeed_packet *packet,
-		GString **out)
-{
-	const struct sr_datafeed_meta *meta;
-	const struct sr_datafeed_logic *logic;
-	const struct sr_datafeed_analog *analog;
-	const struct sr_config *src;
-	unsigned int num_samples;
-	float *data;
-	GSList *l, *channels;
-	struct context *ctx;
+        unsigned i, j;
 	int idx;
-	uint64_t i, j, k, nums, numch;
-	gchar *p, c;
-	int ret = SR_OK;
+        uint8_t *sample;
+
+        if (ctx->dedup && !ctx->prevsample)
+                ctx->prevsample = g_malloc0(logic->unitsize);
+
+        *out = g_string_sized_new(512);
+        for (i = 0; i <= logic->length - logic->unitsize;
+             i += logic->unitsize) {
+                ctx->sample_time += ctx->period;
+                sample = logic->data + i;
+                if (ctx->dedup) {
+                        if (i > 0 && i < logic->length - logic->unitsize &&
+                            !memcmp(sample, ctx->prevsample, logic->unitsize))
+                                continue;
+                        memcpy(ctx->prevsample, sample, logic->unitsize);
+                }
+
+                if (ctx->time) {
+                        g_string_append_printf(
+                                *out, "%lu%s", ctx->sample_time, ctx->value);
+                }
+                for (j = 0; j < ctx->num_channels; j++) {
+                        if (ctx->channels[j]->type == SR_CHANNEL_LOGIC) {
+                                idx = ctx->channels[j]->index;
+                                g_string_append_c(
+                                        *out, sample[idx / 8] & (1 << (idx % 8))
+                                              ? '1' : '0');
+                        }
+                        g_string_append(*out, ctx->value);
+                }
+                if (j) {
+                        /* Drop last separator. */
+                        g_string_truncate(
+                                *out, (*out)->len - strlen(ctx->value));
+                }
+                g_string_append(*out, ctx->record);
+        }
+}
+
+/*
+ * Analog devices can have samples of different types. Since each
+ * packet has only one meaning, it is restricted to having at most one
+ * type of data. So they send multiple packets for a single sample.
+ * To further complicate things, they can send multiple samples in a
+ * single packet.
+ *
+ * So we need to pull any channels of interest out of a packet and save
+ * them until we have complete samples to output. Some devices make this
+ * simple by sending DF_FRAME_BEGIN/DF_FRAME_END packets, the latter of which
+ * signals the end of a set of samples, so we can dump things there.
+ *
+ * At least one driver (the demo driver) sends packets that contain parts of
+ * multiple samples without wrapping them in DF_FRAME. Possibly this driver
+ * is buggy, but it's also the standard for testing, so it has to be supported
+ * as is.
+ *
+ * Many assumptions about the "shape" of the data here:
+ *
+ * All of the data for a channel is assumed to be in one frame;
+ * otherwise the data in the second packet will overwrite the data in
+ * the first packet.
+ */
+static void dump_saved_values(struct context *ctx, GString **out);
+static int process_analog(struct context *ctx,
+                          const struct sr_datafeed_analog *analog, GString **out)
+{
+        int ret;
+        unsigned i, j, c, num_channels;
+        struct sr_analog_meaning *meaning;
+        struct sr_channel *ch;
+        GSList *l;
+        float *fdata = NULL;
+
+
+        if (!ctx->analog_samples) {
+                ctx->channels_seen = 0;
+                ctx->num_samples = analog->num_samples;
+                ctx->analog_samples = g_malloc(
+                        analog->num_samples * ctx->num_channels * sizeof(float));
+        } else if (ctx->num_samples != analog->num_samples) {
+                sr_err("Device sent uneven sample lengths.");
+                return SR_ERR;
+        }
+
+        meaning = analog->meaning;
+        num_channels = g_slist_length(meaning->channels);
+        fdata = g_malloc(analog->num_samples * num_channels);
+        if ((ret = sr_analog_to_float(analog, fdata)) != SR_OK) {
+                sr_err("Error converting data to floating format.");
+                return ret;
+        }
+
+        for (i = 0; i < ctx->num_channels; i += 1) {
+                for (l = meaning->channels, c = 0; l; l = l->next, c += 1) {
+                        if (ctx->channels[i] == (ch = l->data)) {
+                                ctx->channels_seen += 1;
+                                sr_spew("Saving data for channel %u: %u/%u", i,
+                                        ctx->channels_seen, ctx->num_channels);
+                                for (j = 0; j < analog->num_samples; j += 1) {
+                                        ctx->analog_samples[j*ctx->num_channels+i]
+                                                = fdata[j * num_channels + c];
+                                }
+                        }
+                }
+        }
+
+        /* If we've got them all, dump the values */
+        if (ctx->channels_seen == ctx->num_channels) {
+                dump_saved_values(ctx, out);
+        }
+        return SR_OK;
+}
+
+static void dump_saved_values(struct context *ctx, GString **out)
+{
+        unsigned i, j, size;
+        float *sample;
+
+        if (!ctx->analog_samples)
+                return;
+
+        size = ctx->num_channels * sizeof(float);
+        if (ctx->dedup && !ctx->prevsample)
+                ctx->prevsample = g_malloc0(size);
+
+        *out = g_string_sized_new(512);
+        for (i = 0; i < ctx->num_samples; i += 1) {
+                ctx->sample_time += ctx->period;
+                sample = &ctx->analog_samples[i * ctx->num_channels];
+                if (ctx->dedup) {
+                        if (i > 0 && i < ctx->num_samples - 1 &&
+                            !memcmp(sample, ctx->prevsample, size))
+                                continue;
+                        memcpy(ctx->prevsample, sample, size);
+                }
+
+                if (ctx->time) {
+                        g_string_append_printf(*out ,"%lu%s", ctx->sample_time,
+                                               ctx->value);
+                }
+                for (j = 0; j < ctx->num_channels; j += 1) {
+                        g_string_append_printf(
+                                *out, "%f%s",
+                                ctx->analog_samples[i * ctx->num_channels + j],
+                                ctx->value);
+                }
+                g_string_truncate(*out, (*out)->len - strlen(ctx->value));
+                g_string_append(*out, ctx->record);
+        }
+        g_free(ctx->analog_samples);
+        ctx->analog_samples = NULL;
+}
+
+static int receive(
+        const struct sr_output *o, const struct sr_datafeed_packet *packet,
+        GString **out)
+{
+	struct context *ctx;
 
 	*out = NULL;
 	if (!o || !o->sdi)
@@ -209,110 +442,29 @@ static int receive(const struct sr_output *o, const struct sr_datafeed_packet *p
 	if (!(ctx = o->priv))
 		return SR_ERR_ARG;
 
+        sr_dbg("Got packet of type %d", packet->type);
 	switch (packet->type) {
-	case SR_DF_META:
-		meta = packet->payload;
-		for (l = meta->config; l; l = l->next) {
-			src = l->data;
-			if (src->key != SR_CONF_SAMPLERATE)
-				continue;
-			ctx->samplerate = g_variant_get_uint64(src->data);
-		}
-		break;
-	case SR_DF_FRAME_BEGIN:
-		/*
-		 * Special case - we start gathering data from analog channels
-		 * and wait for SR_DF_FRAME_END to dump it.
-		 */
-		memset(ctx->analog_vals, 0, sizeof(float) * ctx->num_analog_channels);
-		ctx->inframe = TRUE;
-		ret = SR_OK;
-		break;
+        case SR_DF_HEADER:
+                *out = gen_header(o, packet->payload);
+                break;
 	case SR_DF_FRAME_END:
-		/*
-		 * Dump gathered data.
-		 */
-		init_output(out, ctx, o);
-
-		for (i = 0, j = 0; i < ctx->num_enabled_channels; i++) {
-			if (ctx->channels[i]->type == SR_CHANNEL_ANALOG) {
-				g_string_append_printf(*out, "%f",
-							ctx->analog_vals[j++]);
-			}
-			g_string_append_c(*out, ctx->separator);
-		}
-		g_string_truncate(*out, (*out)->len - 1);
-		g_string_append_printf(*out, "\n");
-
-		ctx->inframe = FALSE;
-		break;
+                dump_saved_values(ctx, out);
+                *out = g_string_new(ctx->frame);
+                break;
 	case SR_DF_LOGIC:
-		logic = packet->payload;
-		init_output(out, ctx, o);
-
-		for (i = 0; i <= logic->length - logic->unitsize; i += logic->unitsize) {
-			for (j = 0; j < ctx->num_enabled_channels; j++) {
-				if (ctx->channels[j]->type == SR_CHANNEL_LOGIC) {
-					idx = ctx->channels[j]->index;
-					p = logic->data + i + idx / 8;
-					c = *p & (1 << (idx % 8));
-					g_string_append_c(*out, c ? '1' : '0');
-				}
-				g_string_append_c(*out, ctx->separator);
-			}
-			if (j) {
-				/* Drop last separator. */
-				g_string_truncate(*out, (*out)->len - 1);
-			}
-			g_string_append_printf(*out, "\n");
-		}
+                init_output(out, ctx);
+                if (ctx->type == SR_CHANNEL_LOGIC)
+                        process_logic(ctx, packet->payload, out);
+                else sr_warn("Ignoring logic packet while outputing analog data");
 		break;
 	case SR_DF_ANALOG:
-		analog = packet->payload;
-		channels = analog->meaning->channels;
-		numch = g_slist_length(channels);
-		num_samples = analog->num_samples;
-		data = g_malloc(sizeof(float) * num_samples * numch);
-		ret = sr_analog_to_float(analog, data);
-		if (ret != SR_OK)
-			return ret;
-
-		if (ctx->inframe) {
-			handle_analog_frame(ctx, channels, num_samples, data);
-			break;
-		}
-
-		init_output(out, ctx, o);
-		k = 0;
-		l = NULL;
-
-		if (num_samples > numch)
-			nums = num_samples / numch;
-		else
-			nums = 1;
-
-		for (i = 0; i < nums; i++) {
-			for (j = 0; j < ctx->num_enabled_channels; j++) {
-				if (ctx->channels[j]->type == SR_CHANNEL_ANALOG) {
-					if (!l)
-						l = channels;
-
-					if (ctx->channels[j] == l->data) {
-						g_string_append_printf(*out,
-							"%f", data[k++]);
-					}
-
-					l = l->next;
-				}
-				g_string_append_c(*out, ctx->separator);
-			}
-			g_string_truncate(*out, (*out)->len - 1);
-			g_string_append_printf(*out, "\n");
-		}
+                init_output(out, ctx);
+                if (ctx->type == SR_CHANNEL_ANALOG)
+                        return process_analog(ctx, packet->payload, out);
+                sr_warn("Ignoring analog packet while outputing logic data");
 		break;
 	}
-
-	return ret;
+	return SR_OK;
 }
 
 static int cleanup(struct sr_output *o)
@@ -324,14 +476,51 @@ static int cleanup(struct sr_output *o)
 
 	if (o->priv) {
 		ctx = o->priv;
+                g_free((gpointer) ctx->value);
+                g_free((gpointer) ctx->record);
+                g_free((gpointer) ctx->frame);
+                g_free((gpointer) ctx->comment);
+                g_free((gpointer) ctx->gnuplot);
+                g_free(ctx->prevsample);
 		g_free(ctx->channels);
-		g_free(ctx->analog_channels);
-		g_free(ctx->analog_vals);
 		g_free(o->priv);
 		o->priv = NULL;
 	}
 
 	return SR_OK;
+}
+
+static struct sr_option options[] = {
+     {"sigrok", "sigrok", "Set options properly for sigrok csv input", NULL, NULL},
+     {"gnuplot", "gnuplot", "gnuplot script file name", NULL, NULL},
+     {"value", "Value separator", "String to print between values", NULL, NULL},
+     {"record", "Record separator", "String to print between records", NULL, NULL},
+     {"frame", "Frame seperator", "String to print between frames", NULL, NULL},
+     {"comment", "Comment start string",
+      "String used at start of comment lines", NULL, NULL},
+     {"header", "Output header", "Output header comment with capture metdata",
+      NULL, NULL},
+     {"label", "Label values", "Output labels for each value", NULL, NULL},
+     {"time", "Time column", "Output sample time as column 1", NULL, NULL},
+     {"dedup", "Dedup rows", "Set to false to output duplicate rows", NULL, NULL},
+     ALL_ZERO
+};
+
+static const struct sr_option *get_options(void)
+{
+        if (!options[0].def) {
+                options[0].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
+                options[1].def = g_variant_ref_sink(g_variant_new_string(""));
+                options[2].def = g_variant_ref_sink(g_variant_new_string(","));
+                options[3].def = g_variant_ref_sink(g_variant_new_string("\n"));
+                options[4].def = g_variant_ref_sink(g_variant_new_string("\n"));
+                options[5].def = g_variant_ref_sink(g_variant_new_string(";"));
+                options[6].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[7].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[8].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[9].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+        }
+        return options;
 }
 
 SR_PRIV struct sr_output_module output_csv = {
@@ -340,7 +529,7 @@ SR_PRIV struct sr_output_module output_csv = {
 	.desc = "Comma-separated values",
 	.exts = (const char*[]){"csv", NULL},
 	.flags = 0,
-	.options = NULL,
+	.options = get_options,
 	.init = init,
 	.receive = receive,
 	.cleanup = cleanup,
