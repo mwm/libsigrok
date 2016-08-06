@@ -22,10 +22,15 @@
  * Xsigrok:  Set the formatting options to the proper value for sigrok's
  *          csv input routines.
  *
- * Xgnuplot: Write out a gnuplot intrerpreter script (.gpi file) to plot
- *          the datafile using the parameters given.
+ * gnuplot: Write out a gnuplot intrerpreter script (.gpi file) to plot
+ *          the datafile using the parameters given. It should be called
+ *          from a gnuplot session with the data file name as a paramter
+ *          after adjusting line styles, terminal, etc.
  *
- * value:   The string to use to separate values in a record. Defaults to ','.
+ * scale:   The gnuplot graphs are scaled so they all have the same
+ *          peak-to-peak distance. Defaults to TRUE.
+ *
+ * value:   The string used to separate values in ba record. Defaults to ','.
  *
  * record:  The string to use to separate records. Default is newline. gnuplot
  *          files must use newline.
@@ -46,6 +51,10 @@
  *          this is forced to be off.
  */
 
+#include <errno.h>
+#include <float.h>
+#include <math.h>
+
 #include <config.h>
 #include <stdlib.h>
 #include <string.h>
@@ -55,22 +64,28 @@
 
 #define LOG_PREFIX "output/csv"
 
+struct ctx_channel {
+        struct sr_channel *ch;
+        float min, max;
+};
+
 struct context {
         /* Options */
         const char *gnuplot;
+        gboolean scale;
 	const char *value;
         const char *record;
         const char *frame;
         const char *comment;
-        gboolean header;
-        gboolean label;
+        gboolean header, did_header;
+        gboolean label, did_label;
         gboolean time;
         gboolean dedup;
 
         /* Plot data */
 	unsigned num_analog_channels;
         unsigned num_logic_channels;
-	struct sr_channel **channels;
+        struct ctx_channel *channels;
 
         /* Metadata */
 	uint64_t period;
@@ -109,6 +124,7 @@ static int init(struct sr_output *o, GHashTable *options)
         ctx->gnuplot = g_strdup(
                 g_variant_get_string(
                         g_hash_table_lookup(options, "gnuplot"), NULL));
+	ctx->scale = g_variant_get_boolean(g_hash_table_lookup(options, "scale"));
 	ctx->value = g_strdup(
                 g_variant_get_string(g_hash_table_lookup(options, "value"), NULL));
 	ctx->record = g_strdup(
@@ -127,16 +143,20 @@ static int init(struct sr_output *o, GHashTable *options)
              g_hash_table_lookup(options, "dedup"));
         ctx->dedup &= ctx->time;
 
-        if (*ctx->gnuplot && !strcmp(ctx->record, "\n")) {
+        if (*ctx->gnuplot && g_strcmp0(ctx->record, "\n")) {
                 sr_warn("gnuplot record separator must be newline");
-                g_free((gpointer) ctx->record);
-                ctx->record = g_strdup("\n");
         }
 
-        sr_dbg("Gnuplot = '%s', value = '%s', record = '%s', frame = '%s'",
-               ctx->gnuplot, ctx->value, ctx->record, ctx->frame);
-        sr_dbg("comment = '%s', header = %d, label = %d, time = %d, dedup = %d",
-               ctx->comment, ctx->header, ctx->label, ctx->time, ctx->dedup);
+        if (*ctx->gnuplot && strlen(ctx->value) > 1) {
+                sr_warn("gnuplot does not support multichar value separators");
+
+        }
+
+        sr_dbg("Gnuplot = '%s', scale = %d", ctx->gnuplot, ctx->scale);
+        sr_dbg("value = '%s', record = '%s', frame = '%s', comment = '%s'",
+                ctx->value, ctx->record, ctx->frame, ctx->comment);
+        sr_dbg("header = %d, label = %d, time = %d, dedup = %d",
+               ctx->header, ctx->label, ctx->time, ctx->dedup);
 
         analog_channels = logic_channels = 0;
 	/* Get the number of channels, and the unitsize. */
@@ -158,15 +178,25 @@ static int init(struct sr_output *o, GHashTable *options)
                 ctx->num_logic_channels = logic_channels;
         }
 	ctx->channels = g_malloc(
-                sizeof(struct sr_channel *)
+                sizeof(struct ctx_channel)
                 * (ctx->num_analog_channels + ctx->num_logic_channels));
 
 
 	/* Once more to map the enabled channels. */
 	for (i = 0, l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
-		if (ch->enabled)
-                        ctx->channels[i++] = ch;
+		if (ch->enabled) {
+                        if (ch->type == SR_CHANNEL_ANALOG) {
+                                ctx->channels[i].min = FLT_MAX;
+                                ctx->channels[i].max = FLT_MIN;
+                        } else if (ch->type == SR_CHANNEL_LOGIC) {
+                                ctx->channels[i].min = 0;
+                                ctx->channels[i].max = 1;
+                        } else {
+                                sr_warn("Unknown channel type %d", ch->type);
+                        }
+                        ctx->channels[i++].ch = ch;
+                }
 	}
 
 	return SR_OK;
@@ -216,7 +246,8 @@ static GString *gen_header(
         ctx->title = o->sdi->driver->longname;
 
 	/* Some metadata */
-        if (ctx->header) {
+        if (ctx->header && !ctx->did_header) {
+                /* save_gnuplot knows how many lines we print. */
                 g_string_append_printf(
                         header, "%s CSV generated by %s %s\n%s from %s on %s",
                         ctx->comment, PACKAGE_NAME, SR_PACKAGE_VERSION_STRING,
@@ -244,6 +275,7 @@ static GString *gen_header(
                                 samplerate_s);
                         g_free(samplerate_s);
                 }
+                ctx->did_header = TRUE;
         }
 
 	return header;
@@ -301,12 +333,12 @@ static void process_analog(struct context *ctx,
         }
 
         for (i=0; i < ctx->num_analog_channels + ctx->num_logic_channels; i += 1){
-                sr_dbg("Looking for channel %s", ctx->channels[i]->name);
-                if (ctx->channels[i]->type == SR_CHANNEL_ANALOG) {
+                sr_dbg("Looking for channel %s", ctx->channels[i].ch->name);
+                if (ctx->channels[i].ch->type == SR_CHANNEL_ANALOG) {
                         for (l=meaning->channels, c=0; l; l=l->next, c += 1) {
                                 struct sr_channel *ch = l->data;
                                 sr_dbg("Checking %s", ch->name);
-                                if (ctx->channels[i] == l->data) {
+                                if (ctx->channels[i].ch == l->data) {
                                         ctx->channels_seen += 1;
                                         sr_dbg("Seen %u of %u channels in analog",
                                                ctx->channels_seen,
@@ -347,7 +379,7 @@ static void process_logic(
         }
 
         for (j = ch = 0; ch < ctx->num_logic_channels; j += 1) {
-                if (ctx->channels[j]->type == SR_CHANNEL_LOGIC) {
+                if (ctx->channels[j].ch->type == SR_CHANNEL_LOGIC) {
                         ctx->channels_seen += 1;
                         sr_dbg("Seen %u of %u channels in logic",
                                ctx->channels_seen, ctx->num_analog_channels +
@@ -355,7 +387,7 @@ static void process_logic(
                         for (i = 0; i <= logic->length - logic->unitsize;
                              i += logic->unitsize) {
                                 sample = logic->data + i;
-                                idx = ctx->channels[ch]->index;
+                                idx = ctx->channels[ch].ch->index;
                                 ctx->logic_samples[
                                         i * ctx->num_logic_channels + ch] =
                                         sample[ idx / 8] & (1 << (idx % 8));
@@ -368,7 +400,7 @@ static void process_logic(
 static void dump_saved_values(struct context *ctx, GString **out)
 {
         unsigned i, j, analog_size, num_channels;
-        float *analog_sample;
+        float *analog_sample, value;
         uint8_t *logic_sample;
 
         /* If we haven't seen samples we're expecting, skip them */
@@ -381,20 +413,20 @@ static void dump_saved_values(struct context *ctx, GString **out)
                 *out = g_string_sized_new(512);
                 num_channels = ctx->num_logic_channels + ctx->num_analog_channels;
 
-                if (ctx->label) {
+                if (ctx->label && !ctx->did_label) {
                         if (ctx->time) {
                                 g_string_append_printf(*out, "Time%s", ctx->value);
                         }
                         for (i = 0; i < num_channels; i += 1) {
                                 g_string_append_printf(
-                                        *out, "%s%s", ctx->channels[i]->name,
+                                        *out, "%s%s", ctx->channels[i].ch->name,
                                         ctx->value);
                         }
                         /* Drop last separator. */
-                        g_string_truncate(*out, (*out)->len - strlen(ctx->value));
+                        g_string_truncate(*out, (*out)->len - 1);
                         g_string_append(*out, ctx->record);
 
-                        ctx->label = FALSE;
+                        ctx->did_label = TRUE;
                 }
 
                 analog_size = ctx->num_analog_channels * sizeof(float);
@@ -432,13 +464,18 @@ static void dump_saved_values(struct context *ctx, GString **out)
                                         ctx->value);
                         }
                         for (j = 0; j < num_channels; j += 1) {
-                                if (ctx->channels[j]->type == SR_CHANNEL_ANALOG)
+                                if (ctx->channels[j].ch->type ==
+                                    SR_CHANNEL_ANALOG) {
+                                        value = ctx->analog_samples[
+                                                i * ctx->num_analog_channels + j];
+                                        ctx->channels[j].max = fmax(
+                                                value, ctx->channels[j].max);
+                                        ctx->channels[j].min = fmin(
+                                                value, ctx->channels[j].min);
                                         g_string_append_printf(
-                                                *out, "%f%s",
-                                                ctx->analog_samples[
-                                                        i * ctx->num_analog_channels + j],
+                                                *out, "%g%s", value, 
                                                 ctx->value);
-                                else if (ctx->channels[j]->type == 
+                                } else if (ctx->channels[j].ch->type == 
                                          SR_CHANNEL_LOGIC) {
                                         g_string_append_printf(
                                                 *out, "%c%s",
@@ -447,10 +484,11 @@ static void dump_saved_values(struct context *ctx, GString **out)
                                                 ? '1' : '0',
                                                 ctx->value);
                                 } else {
-                                        sr_warn("Unknown channel type in data");
+                                        sr_warn("Unexpected channel type: %d",
+                                                ctx->channels[i].ch->type);
                                 }
                         }
-                        g_string_truncate(*out, (*out)->len - strlen(ctx->value));
+                        g_string_truncate(*out, (*out)->len - 1);
                         g_string_append(*out, ctx->record);
                 }
         }
@@ -464,6 +502,56 @@ static void dump_saved_values(struct context *ctx, GString **out)
         ctx->previous_sample = NULL;
         ctx->analog_samples = NULL;
         ctx->logic_samples = NULL;
+}
+
+static void save_gnuplot(struct context *ctx) {
+        float offset, max, sum;
+        unsigned i, num_channels;
+        GString *script;
+        
+        script = g_string_sized_new(512);
+        g_string_append_printf(script, "set datafile separator '%s'\n",
+                               ctx->value);
+        if (ctx->did_label)
+                g_string_append(script, "set key autotitle columnhead\n");
+        if (ctx->xlabel && ctx->time)
+                g_string_append_printf(script, "set xlabel '%s'\n", ctx->xlabel);
+
+        g_string_append(script, "plot ");
+
+        num_channels = ctx->num_analog_channels + ctx->num_logic_channels;
+
+        /* Graph position and scaling */
+        max = FLT_MIN;
+        sum = 0;
+        for (i = 0; i < num_channels; i += 1) {
+                ctx->channels[i].max = ctx->channels[i].max - ctx->channels[i].min;
+                max = fmax(max, ctx->channels[i].max);
+                sum += ctx->channels[i].max;
+        }
+        sum = (ctx->scale ? max : sum / num_channels) / 4;
+        offset = sum;
+        for (i = num_channels; i > 0;) {
+                i -= 1;
+                ctx->channels[i].min = offset - ctx->channels[i].min;
+                offset += sum + (ctx->scale ? max : ctx->channels[i].max);
+        }
+
+        for (i = 0; i < num_channels; i += 1) {
+                sr_spew("Channel %d, min %g, max %g", i, ctx->channels[i].min,
+                        ctx->channels[i].max);
+                g_string_append(script, "ARG1 ");
+                if (ctx->did_header)
+                        g_string_append(script, "skip 4 ");
+                g_string_append_printf(script, "using %u:($%u * %g + %g), ",
+                                       ctx->time, i + 1 + ctx->time,
+                                       ctx->scale ? max / ctx->channels[i].max : 1,
+                                       ctx->channels[i].min);
+                offset += 1.1 * (ctx->channels[i].max - ctx->channels[i].min);
+        }
+        g_string_truncate(script, script->len - 2);
+        g_file_set_contents(ctx->gnuplot, script->str, script->len, NULL);
+        g_string_free(script, TRUE);
 }
 
 static int receive(
@@ -497,6 +585,9 @@ static int receive(
                 if (ctx->channels_seen)
                         ctx->channels_seen = ctx->num_analog_channels +
                                 ctx->num_logic_channels;
+                if (*ctx->gnuplot) {
+                        save_gnuplot(ctx);
+                }
                 break;
 	}
 
@@ -517,7 +608,6 @@ static int cleanup(struct sr_output *o)
 
 	if (o->priv) {
 		ctx = o->priv;
-                g_free((gpointer) ctx->value);
                 g_free((gpointer) ctx->record);
                 g_free((gpointer) ctx->frame);
                 g_free((gpointer) ctx->comment);
@@ -534,7 +624,8 @@ static int cleanup(struct sr_output *o)
 static struct sr_option options[] = {
      {"sigrok", "sigrok", "Set options properly for sigrok csv input", NULL, NULL},
      {"gnuplot", "gnuplot", "gnuplot script file name", NULL, NULL},
-     {"value", "Value separator", "String to print between values", NULL, NULL},
+     {"scale", "scale", "Scale gnuplot graphs", NULL, NULL},
+     {"value", "Value separator", "Character to print between values", NULL, NULL},
      {"record", "Record separator", "String to print between records", NULL, NULL},
      {"frame", "Frame seperator", "String to print between frames", NULL, NULL},
      {"comment", "Comment start string",
@@ -552,14 +643,15 @@ static const struct sr_option *get_options(void)
         if (!options[0].def) {
                 options[0].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
                 options[1].def = g_variant_ref_sink(g_variant_new_string(""));
-                options[2].def = g_variant_ref_sink(g_variant_new_string(","));
-                options[3].def = g_variant_ref_sink(g_variant_new_string("\n"));
+                options[2].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[3].def = g_variant_ref_sink(g_variant_new_string(","));
                 options[4].def = g_variant_ref_sink(g_variant_new_string("\n"));
-                options[5].def = g_variant_ref_sink(g_variant_new_string(";"));
-                options[6].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[5].def = g_variant_ref_sink(g_variant_new_string("\n"));
+                options[6].def = g_variant_ref_sink(g_variant_new_string(";"));
                 options[7].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
                 options[8].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
                 options[9].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[10].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
         }
         return options;
 }
