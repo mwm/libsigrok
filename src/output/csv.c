@@ -93,7 +93,9 @@ struct context {
         uint8_t *previous_sample;
         float *analog_samples;
         uint8_t *logic_samples;
-        uint32_t channels_seen, num_samples;
+        uint32_t num_samples;
+        uint32_t channel_count , logic_channel_count;
+        uint32_t channels_seen;
         const char *xlabel;    // Don't free: will point to a static string.
         const char *title;     // Don't free: will point into the driver structure.
 };
@@ -162,12 +164,14 @@ static int init(struct sr_output *o, GHashTable *options)
 	/* Get the number of channels, and the unitsize. */
 	for (l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
-		if (ch->enabled) {
-			if (ch->type == SR_CHANNEL_LOGIC)
-				logic_channels += 1;
-			if (ch->type == SR_CHANNEL_ANALOG)
-				analog_channels += 1;
-		}
+                if (ch->type == SR_CHANNEL_LOGIC) {
+                        ctx->logic_channel_count += 1;
+                        if (ch->enabled) {
+                                logic_channels += 1;
+                        }
+                }
+                if (ch->type == SR_CHANNEL_ANALOG && ch->enabled)
+                        analog_channels += 1;
 	}
         if (analog_channels) {
                 sr_info("Outputting %d analog values", analog_channels);
@@ -183,6 +187,7 @@ static int init(struct sr_output *o, GHashTable *options)
 
 
 	/* Once more to map the enabled channels. */
+        ctx->channel_count = g_slist_length(o->sdi->channels);
 	for (i = 0, l = o->sdi->channels; l; l = l->next) {
 		ch = l->data;
 		if (ch->enabled) {
@@ -326,6 +331,7 @@ static void process_analog(struct context *ctx,
 
         meaning = analog->meaning;
         num_channels = g_slist_length(meaning->channels);
+        ctx->channels_seen += num_channels;
         sr_dbg("Processing packet of %u analog channels", num_channels);
         fdata = g_malloc(analog->num_samples * num_channels);
         if ((ret = sr_analog_to_float(analog, fdata)) != SR_OK) {
@@ -333,17 +339,13 @@ static void process_analog(struct context *ctx,
         }
 
         for (i=0; i < ctx->num_analog_channels + ctx->num_logic_channels; i += 1){
-                sr_dbg("Looking for channel %s", ctx->channels[i].ch->name);
                 if (ctx->channels[i].ch->type == SR_CHANNEL_ANALOG) {
+                        sr_dbg("Looking for channel %s",
+                               ctx->channels[i].ch->name);
                         for (l=meaning->channels, c=0; l; l=l->next, c += 1) {
                                 struct sr_channel *ch = l->data;
                                 sr_dbg("Checking %s", ch->name);
                                 if (ctx->channels[i].ch == l->data) {
-                                        ctx->channels_seen += 1;
-                                        sr_dbg("Seen %u of %u channels in analog",
-                                               ctx->channels_seen,
-                                               ctx->num_analog_channels +
-                                               ctx->num_logic_channels);
                                         for (j=0; j < analog->num_samples; j += 1){
                                                 ctx->analog_samples[j * ctx->num_analog_channels + i] = fdata[j * num_channels + c];
                                         }
@@ -367,6 +369,8 @@ static void process_logic(
         uint8_t *sample;
 
         num_samples = logic->length / logic->unitsize;
+        ctx->channels_seen += ctx->logic_channel_count;
+        sr_dbg("Logic packet had %d channels", logic->unitsize * 8);
         if (!ctx->logic_samples) {
                 ctx->logic_samples = g_malloc(
                         num_samples * ctx->num_logic_channels);
@@ -380,10 +384,6 @@ static void process_logic(
 
         for (j = ch = 0; ch < ctx->num_logic_channels; j += 1) {
                 if (ctx->channels[j].ch->type == SR_CHANNEL_LOGIC) {
-                        ctx->channels_seen += 1;
-                        sr_dbg("Seen %u of %u channels in logic",
-                               ctx->channels_seen, ctx->num_analog_channels +
-                               ctx->num_logic_channels);
                         for (i = 0; i <= logic->length - logic->unitsize;
                              i += logic->unitsize) {
                                 sample = logic->data + i;
@@ -583,8 +583,7 @@ static int receive(
         case SR_DF_END:
                 /* Got to end of frame/session with part of the data */
                 if (ctx->channels_seen)
-                        ctx->channels_seen = ctx->num_analog_channels +
-                                ctx->num_logic_channels;
+                        ctx->channels_seen = ctx->channel_count;
                 if (*ctx->gnuplot) {
                         save_gnuplot(ctx);
                 }
@@ -592,8 +591,7 @@ static int receive(
 	}
 
         /* If we've got them all, dump the values */
-        if (ctx->channels_seen >=
-            ctx->num_analog_channels + ctx->num_logic_channels) {
+        if (ctx->channels_seen >= ctx->channel_count) {
                 dump_saved_values(ctx, out);
         }
 	return SR_OK;
