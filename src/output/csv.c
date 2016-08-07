@@ -47,6 +47,9 @@
  * time:    Whether or not the first column should include the time the sample
  *          was taken. Defaults to TRUE.
  *
+ * trigger: Whether or not to add a "trigger" column as the last column.
+ *          Defaults to FALSE.
+ *
  * dedup:   Don't output duplicate rows. Defaults to TRUE. If time is off, then
  *          this is forced to be off.
  */
@@ -80,6 +83,7 @@ struct context {
         gboolean header, did_header;
         gboolean label, did_label;
         gboolean time;
+        gboolean do_trigger;
         gboolean dedup;
 
         /* Plot data */
@@ -88,24 +92,19 @@ struct context {
         struct ctx_channel *channels;
 
         /* Metadata */
+        gboolean trigger;
+        uint32_t num_samples;
+        uint32_t channel_count , logic_channel_count;
+        uint32_t channels_seen;
 	uint64_t period;
         uint64_t sample_time;
         uint8_t *previous_sample;
         float *analog_samples;
         uint8_t *logic_samples;
-        uint32_t num_samples;
-        uint32_t channel_count , logic_channel_count;
-        uint32_t channels_seen;
         const char *xlabel;    // Don't free: will point to a static string.
         const char *title;     // Don't free: will point into the driver structure.
 };
 
-/*
- * TODO:
- *  - Option to print comma-separated bits, or whole bytes/words (for 8/16
- *    channel LAs) as ASCII/hex etc. etc.
- *  - Trigger support.
- */
 
 static int init(struct sr_output *o, GHashTable *options)
 {
@@ -140,6 +139,8 @@ static int init(struct sr_output *o, GHashTable *options)
 	ctx->header = g_variant_get_boolean(
                 g_hash_table_lookup(options, "header"));
 	ctx->time = g_variant_get_boolean(g_hash_table_lookup(options, "time"));
+	ctx->do_trigger = g_variant_get_boolean(
+                g_hash_table_lookup(options, "trigger"));
 	ctx->label = g_variant_get_boolean(g_hash_table_lookup(options, "label"));
 	ctx->dedup = g_variant_get_boolean(
              g_hash_table_lookup(options, "dedup"));
@@ -157,8 +158,8 @@ static int init(struct sr_output *o, GHashTable *options)
         sr_dbg("Gnuplot = '%s', scale = %d", ctx->gnuplot, ctx->scale);
         sr_dbg("value = '%s', record = '%s', frame = '%s', comment = '%s'",
                 ctx->value, ctx->record, ctx->frame, ctx->comment);
-        sr_dbg("header = %d, label = %d, time = %d, dedup = %d",
-               ctx->header, ctx->label, ctx->time, ctx->dedup);
+        sr_dbg("header = %d, label = %d, time = %d, do_trigger = %d, dedup = %d",
+               ctx->header, ctx->label, ctx->time, ctx->do_trigger, ctx->dedup);
 
         analog_channels = logic_channels = 0;
 	/* Get the number of channels, and the unitsize. */
@@ -422,6 +423,10 @@ static void dump_saved_values(struct context *ctx, GString **out)
                                         *out, "%s%s", ctx->channels[i].ch->name,
                                         ctx->value);
                         }
+                        if (ctx->do_trigger) {
+                                g_string_append_printf(
+                                        *out, "Trigger%s", ctx->value);
+                        }
                         /* Drop last separator. */
                         g_string_truncate(*out, (*out)->len - 1);
                         g_string_append(*out, ctx->record);
@@ -487,6 +492,11 @@ static void dump_saved_values(struct context *ctx, GString **out)
                                         sr_warn("Unexpected channel type: %d",
                                                 ctx->channels[i].ch->type);
                                 }
+                        }
+                        if (ctx->do_trigger) {
+                                g_string_append_printf(
+                                        *out, "%d%s", ctx->trigger, ctx->value);
+                                ctx->trigger = FALSE;
                         }
                         g_string_truncate(*out, (*out)->len - 1);
                         g_string_append(*out, ctx->record);
@@ -571,6 +581,9 @@ static int receive(
         case SR_DF_HEADER:
                 *out = gen_header(o, packet->payload);
                 break;
+        case SR_DF_TRIGGER:
+                ctx->trigger = TRUE;
+                break;
 	case SR_DF_LOGIC:
                 process_logic(ctx, packet->payload);
 		break;
@@ -632,6 +645,8 @@ static struct sr_option options[] = {
       NULL, NULL},
      {"label", "Label values", "Output labels for each value", NULL, NULL},
      {"time", "Time column", "Output sample time as column 1", NULL, NULL},
+     {"trigger", "Trigger column", "Output trigger indicator as last column ",
+      NULL, NULL},
      {"dedup", "Dedup rows", "Set to false to output duplicate rows", NULL, NULL},
      ALL_ZERO
 };
@@ -649,7 +664,8 @@ static const struct sr_option *get_options(void)
                 options[7].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
                 options[8].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
                 options[9].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
-                options[10].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
+                options[10].def = g_variant_ref_sink(g_variant_new_boolean(FALSE));
+                options[11].def = g_variant_ref_sink(g_variant_new_boolean(TRUE));
         }
         return options;
 }
