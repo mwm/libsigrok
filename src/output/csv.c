@@ -40,9 +40,10 @@
  *
  * comment: The string that starts a comment line. Defaults to ';'.
  *
- * header:  Print header comment with capture metadata.
+ * header:  Print header comment with capture metadata. Defaults to TRUE.
  *
- * label:   Add a line of channel labels as the first line of output.
+ * label:   Add a line of channel labels as the first line of output. Defaults
+ *          to TRUE.
  *
  * time:    Whether or not the first column should include the time the sample
  *          was taken. Defaults to TRUE.
@@ -53,6 +54,13 @@
  * dedup:   Don't output duplicate rows. Defaults to TRUE. If time is off, then
  *          this is forced to be off.
  */
+
+/*
+ * TODO:
+ *  - Option to print comma-separated bits, or whole bytes/words (for 8/16
+ *    channel LAs) as ASCII/hex etc. etc.
+ */
+
 
 #include <errno.h>
 #include <float.h>
