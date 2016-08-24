@@ -177,7 +177,7 @@ static void parse_flags(const char *buf, struct metex14_info *info)
 }
 
 static void handle_flags(struct sr_datafeed_analog *analog, float *floatval,
-			int *exponent, const struct metex14_info *info)
+			 int *exponent, const struct metex14_info *info)
 {
 	int factor = 0;
 	/* Factors */

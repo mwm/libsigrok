@@ -437,7 +437,9 @@ SR_PRIV int sr_rs9lcd_parse(const uint8_t *buf, float *floatval,
 		analog->meaning->mqflags |= SR_MQFLAG_AUTORANGE;
 
 	*floatval = rawval;
+
 	analog->encoding->digits  = -exponent;
 	analog->spec->spec_digits = -exponent;
+
 	return SR_OK;
 }

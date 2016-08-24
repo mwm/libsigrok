@@ -472,9 +472,7 @@ static int parse_mq(const uint8_t *pkt, int is_secondary, int is_parallel)
 
 static float parse_value(const uint8_t *buf, int *digits)
 {
-	static const int exponents[] = {
-		0, -1, -2, -3, -4, -5, -6, -7
-	};
+	static const int exponents[] = {0, -1, -2, -3, -4, -5, -6, -7};
 	int exponent;
 	int16_t val;
 

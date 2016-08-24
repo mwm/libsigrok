@@ -224,7 +224,7 @@ static void parse_flags(const uint8_t *buf, struct fs9922_info *info)
 }
 
 static void handle_flags(struct sr_datafeed_analog *analog, float *floatval,
-			int *exponent, const struct fs9922_info *info)
+			 int *exponent, const struct fs9922_info *info)
 {
 	/* Factors */
 	if (info->is_nano)
