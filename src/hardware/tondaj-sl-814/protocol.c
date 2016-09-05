@@ -98,7 +98,7 @@ static void decode_packet(struct sr_dev_inst *sdi)
 
 	devc = sdi->priv;
 
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 1);
 
 	parse_packet(devc->buf, &floatval, &analog);
 
@@ -175,7 +175,7 @@ SR_PRIV int tondaj_sl_814_receive_data(int fd, int revents, void *cb_data)
 	} else if (devc->state == GET_PACKET) {
 		/* Read a packet from the device. */
 		ret = serial_read_nonblocking(serial, devc->buf + devc->buflen,
-				  4 - devc->buflen);
+				4 - devc->buflen);
 		if (ret < 0) {
 			sr_err("Error reading packet: %d.", ret);
 			return TRUE;

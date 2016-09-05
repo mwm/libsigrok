@@ -153,11 +153,11 @@ static void brymen_bm86x_parse(unsigned char *buf, float *floatval,
 			buf[15] &= ~0x04;
 
 		/* SI prefix */
-		if (buf[14] & 0x40)  { floatval[0] *= 1e-9; digits[0] += 9; }  /* n */
-		if (buf[15] & 0x08)  { floatval[0] *= 1e-6; digits[0] += 6; }  /* µ */
-		if (buf[15] & 0x04)  { floatval[0] *= 1e-3; digits[0] += 3; }  /* m */
-		if (buf[15] & 0x40)  { floatval[0] *= 1e3;  digits[0] -= 3; }  /* k */
-		if (buf[15] & 0x20)  { floatval[0] *= 1e6;  digits[0] -= 6; }  /* M */
+		if (buf[14] & 0x40)  { floatval[0] *= 1e-9; digits[0] += 9; } /* n */
+		if (buf[15] & 0x08)  { floatval[0] *= 1e-6; digits[0] += 6; } /* µ */
+		if (buf[15] & 0x04)  { floatval[0] *= 1e-3; digits[0] += 3; } /* m */
+		if (buf[15] & 0x40)  { floatval[0] *= 1e3;  digits[0] -= 3; } /* k */
+		if (buf[15] & 0x20)  { floatval[0] *= 1e6;  digits[0] -= 6; } /* M */
 
 		if (over_limit)      floatval[0] = INFINITY;
 
@@ -192,10 +192,10 @@ static void brymen_bm86x_parse(unsigned char *buf, float *floatval,
 		if (buf[9] & 0x20)  analog[1].meaning->mqflags |= SR_MQFLAG_AC;
 
 		/* SI prefix */
-		if (buf[ 9] & 0x01)  { floatval[1] *= 1e-6; digits[1] += 6; }  /* µ */
-		if (buf[ 9] & 0x02)  { floatval[1] *= 1e-3; digits[1] += 3; }  /* m */
-		if (buf[14] & 0x02)  { floatval[1] *= 1e3;  digits[1] -= 3; }  /* k */
-		if (buf[14] & 0x01)  { floatval[1] *= 1e6;  digits[1] -= 6; }  /* M */
+		if (buf[ 9] & 0x01)  { floatval[1] *= 1e-6; digits[1] += 6; } /* µ */
+		if (buf[ 9] & 0x02)  { floatval[1] *= 1e-3; digits[1] += 3; } /* m */
+		if (buf[14] & 0x02)  { floatval[1] *= 1e3;  digits[1] -= 3; } /* k */
+		if (buf[14] & 0x01)  { floatval[1] *= 1e6;  digits[1] -= 6; } /* M */
 
 		analog[1].encoding->digits  = digits[1];
 		analog[1].spec->spec_digits = digits[1];
@@ -218,6 +218,7 @@ static void brymen_bm86x_handle_packet(const struct sr_dev_inst *sdi,
 
 	devc = sdi->priv;
 
+	/* Note: digits/spec_digits will be overridden later. */
 	sr_analog_init(&analog[0], &encoding[0], &meaning[0], &spec[0], 0);
 	sr_analog_init(&analog[1], &encoding[1], &meaning[1], &spec[1], 0);
 
@@ -259,7 +260,7 @@ static int brymen_bm86x_send_command(const struct sr_dev_inst *sdi)
 
 	sr_dbg("Sending HID set report.");
 	ret = libusb_control_transfer(usb->devhdl,
-	                              LIBUSB_REQUEST_TYPE_CLASS  |
+	                              LIBUSB_REQUEST_TYPE_CLASS |
 	                              LIBUSB_RECIPIENT_INTERFACE |
 	                              LIBUSB_ENDPOINT_OUT,
 	                              9,     /* bRequest: HID set_report */

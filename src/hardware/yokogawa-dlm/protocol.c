@@ -207,8 +207,8 @@ static const struct scope_config scope_models[] = {
 		.num_ydivs = 8,
 	},
 	{
-		.model_id    = {"710110",  "710120",  "710130",  NULL},
-		.model_name  = {"DLM2024", "DLM2034", "DLM2054", NULL},
+		.model_id   = {"710110",  "710120",  "710130",  NULL},
+		.model_name = {"DLM2024", "DLM2034", "DLM2054", NULL},
 		.analog_channels = 4,
 		.digital_channels = 8,
 		.pods = 1,
@@ -224,9 +224,9 @@ static const struct scope_config scope_models[] = {
 	},
 	{
 		.model_id   = {"701307", "701308",  "701310", "701311",
-				"701312", "701313",  NULL},
+			       "701312", "701313",  NULL},
 		.model_name = {"DL9040", "DL9040L", "DL9140", "DL9140L",
-				"DL9240", "DL9240L", NULL},
+			       "DL9240", "DL9240L", NULL},
 		.analog_channels = 4,
 		.digital_channels = 0,
 		.pods = 0,
@@ -995,7 +995,8 @@ static int dlm_analog_samples_send(GArray *data,
 		g_array_append_val(float_data, voltage);
 	}
 
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	/* TODO: Use proper 'digits' value for this device (and its modes). */
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 2);
 	analog.meaning->channels = g_slist_append(NULL, ch);
 	analog.num_samples = float_data->len;
 	analog.data = (float*)float_data->data;

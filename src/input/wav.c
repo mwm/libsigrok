@@ -31,7 +31,7 @@
 #define LOG_PREFIX "input/wav"
 
 /* How many bytes at a time to process and send to the session bus. */
-#define CHUNK_SIZE 4096
+#define CHUNK_SIZE               4096
 
 /* Minimum size of header + 1 8-bit mono PCM sample. */
 #define MIN_DATA_CHUNK_OFFSET    45
@@ -227,7 +227,8 @@ static void send_chunk(const struct sr_input *in, int offset, int num_samples)
 		d += inc->unitsize;
 	}
 
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	/* TODO: Use proper 'digits' value for this device (and its modes). */
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 2);
 	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
 	analog.num_samples = num_samples;

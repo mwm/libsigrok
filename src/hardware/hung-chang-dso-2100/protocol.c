@@ -18,6 +18,7 @@
  */
 
 #include <config.h>
+#include <math.h>
 #include <ieee1284.h>
 #include "protocol.h"
 
@@ -78,11 +79,11 @@
  *  		trigger on (rising or falling)
  *  		The next state is 0x0C
  *  0x0C	Same as state 0x0F but expects the calibration
- *  		value for the first channel's  position
+ *  		value for the first channel's position
  *  		(POS1 in the schematics)
  *  		The next state is 0x0D
  *  0x0D	Same as state 0x0F but expects the calibration
- *  		value for the second channel's  position
+ *  		value for the second channel's position
  *  		(POS2 in the schematics)
  *  		The next state is 0x0E
  *  0x0E	Same as state 0x0F but expects the trigger level
@@ -344,7 +345,10 @@ static void push_samples(const struct sr_dev_inst *sdi, uint8_t *buf, size_t num
 	while (num--)
 		data[num] = (buf[num] - 0x80) * factor;
 
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	float vdivlog = log10f(factor);
+	int digits = -(int)vdivlog + (vdivlog < 0.0);
+
+	sr_analog_init(&analog, &encoding, &meaning, &spec, digits);
 	analog.meaning->channels = devc->enabled_channel;
 	analog.meaning->mq = SR_MQ_VOLTAGE;
 	analog.meaning->unit = SR_UNIT_VOLT;

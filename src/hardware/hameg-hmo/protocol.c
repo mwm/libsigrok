@@ -284,7 +284,7 @@ static void scope_state_dump(const struct scope_config *config,
 	for (i = 0; i < config->analog_channels; i++) {
 		tmp = sr_voltage_string((*config->vdivs)[state->analog_channels[i].vdiv][0],
 					     (*config->vdivs)[state->analog_channels[i].vdiv][1]);
-		sr_info("State of analog channel  %d -> %s : %s (coupling) %s (vdiv) %2.2e (offset)",
+		sr_info("State of analog channel %d -> %s : %s (coupling) %s (vdiv) %2.2e (offset)",
 			i + 1, state->analog_channels[i].state ? "On" : "Off",
 			(*config->coupling_options)[state->analog_channels[i].coupling],
 			tmp, state->analog_channels[i].vertical_offset);
@@ -764,7 +764,8 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 		encoding.is_signed = TRUE;
 		encoding.is_float = TRUE;
 		encoding.is_bigendian = FALSE;
-		encoding.digits = 0;
+		/* TODO: Use proper 'digits' value for this device (and its modes). */
+		encoding.digits = 2;
 		encoding.is_digits_decimal = FALSE;
 		encoding.scale.p = 1;
 		encoding.scale.q = 1;
@@ -779,7 +780,8 @@ SR_PRIV int hmo_receive_data(int fd, int revents, void *cb_data)
 		}
 		meaning.mqflags = 0;
 		meaning.channels = g_slist_append(NULL, ch);
-		spec.spec_digits = 0;
+		/* TODO: Use proper 'digits' value for this device (and its modes). */
+		spec.spec_digits = 2;
 		packet.payload = &analog;
 		sr_session_send(sdi, &packet);
 		g_slist_free(meaning.channels);

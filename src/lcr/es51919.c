@@ -490,21 +490,21 @@ static void parse_measurement(const uint8_t *pkt, float *floatval,
 		int unit;
 		int exponent;
 	} units[] = {
-		{ SR_UNIT_UNITLESS,   0 },	/* no unit */
-		{ SR_UNIT_OHM,        0 },	/* Ohm     */
-		{ SR_UNIT_OHM,        3 },	/* kOhm    */
-		{ SR_UNIT_OHM,        6 },	/* MOhm    */
-		{ -1,                 0 },	/* ???     */
-		{ SR_UNIT_HENRY,     -6 },	/* uH      */
-		{ SR_UNIT_HENRY,     -3 },	/* mH      */
-		{ SR_UNIT_HENRY,      0 },	/* H       */
-		{ SR_UNIT_HENRY,      3 },	/* kH      */
-		{ SR_UNIT_FARAD,    -12 },	/* pF      */
-		{ SR_UNIT_FARAD,     -9 },	/* nF      */
-		{ SR_UNIT_FARAD,     -6 },	/* uF      */
-		{ SR_UNIT_FARAD,     -3 },	/* mF      */
-		{ SR_UNIT_PERCENTAGE, 0 },	/* %       */
-		{ SR_UNIT_DEGREE,     0 },	/* degree  */
+		{ SR_UNIT_UNITLESS,   0 }, /* no unit */
+		{ SR_UNIT_OHM,        0 }, /* Ohm */
+		{ SR_UNIT_OHM,        3 }, /* kOhm */
+		{ SR_UNIT_OHM,        6 }, /* MOhm */
+		{ -1,                 0 }, /* ??? */
+		{ SR_UNIT_HENRY,     -6 }, /* uH */
+		{ SR_UNIT_HENRY,     -3 }, /* mH */
+		{ SR_UNIT_HENRY,      0 }, /* H */
+		{ SR_UNIT_HENRY,      3 }, /* kH */
+		{ SR_UNIT_FARAD,    -12 }, /* pF */
+		{ SR_UNIT_FARAD,     -9 }, /* nF */
+		{ SR_UNIT_FARAD,     -6 }, /* uF */
+		{ SR_UNIT_FARAD,     -3 }, /* mF */
+		{ SR_UNIT_PERCENTAGE, 0 }, /* % */
+		{ SR_UNIT_DEGREE,     0 }, /* degree */
 	};
 	const uint8_t *buf;
 	int digits, exponent;
@@ -535,7 +535,7 @@ static void parse_measurement(const uint8_t *pkt, float *floatval,
 			analog->meaning->mqflags |= SR_MQFLAG_RELATIVE;
 	}
 
-	if ((analog->meaning->mq = parse_mq(pkt, is_secondary, pkt[2] & 0x80)) < 0)
+	if ((analog->meaning->mq = parse_mq(pkt, is_secondary, pkt[2] & 0x80)) == 0)
 		return;
 
 	if ((buf[3] >> 3) >= ARRAY_SIZE(units)) {
@@ -644,6 +644,7 @@ static void handle_packet(struct sr_dev_inst *sdi, const uint8_t *pkt)
 
 	frame = FALSE;
 
+	/* Note: digits/spec_digits will be overridden later. */
 	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
 
 	analog.num_samples = 1;

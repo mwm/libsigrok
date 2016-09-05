@@ -17,9 +17,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/** @file
- *  Gossen Metrawatt Metrahit 1x/2x drivers
- *  @internal
+/**
+ * @file
+ *
+ * Gossen Metrawatt Metrahit 1x/2x drivers
+ *
+ * @internal
  */
 
 #include <config.h>
@@ -92,10 +95,7 @@ static void decode_ctmv_16(uint8_t ctmv, struct dev_context *devc)
 	case 0x0d: /* 1101 µF (15S/16S only) */
 		devc->mq = SR_MQ_CAPACITANCE;
 		devc->unit = SR_UNIT_FARAD;
-		if (ctmv == 0x0c)
-			devc->scale1000 = -3;
-		else
-			devc->scale1000 = -2;
+		devc->scale1000 = (ctmv == 0x0c) ? -3 : -2;
 		break;
 	case 0x0e: /* mA, µA */
 		devc->scale1000 = -1; /* Fall through. */
@@ -116,44 +116,40 @@ static void decode_ctmv_16(uint8_t ctmv, struct dev_context *devc)
  */
 static void decode_rs_16(uint8_t rs, struct dev_context *devc)
 {
-	sr_spew("decode_rs_16(%d) scale = %f", rs, devc->scale);
+	sr_spew("decode_rs_16(%d) scale = %d", rs, devc->scale);
 
 	if (rs & 0x04) /* Sign */
-		devc->scale *= -1.0;
+		devc->scale = -devc->scale;
 
-	if (devc->mq == SR_MQ_CURRENT) {
-		if (rs & 0x08) /* Current is AC */
-			devc->mqflags |= SR_MQFLAG_AC;
-		else
-			devc->mqflags |= SR_MQFLAG_DC;
-	}
+	if (devc->mq == SR_MQ_CURRENT)
+		devc->mqflags |= (rs & 0x08) ? SR_MQFLAG_AC : SR_MQFLAG_DC;
 
 	switch (rs & 0x03) {
 	case 0:
 		if (devc->mq == SR_MQ_VOLTAGE) /* V */
-			devc->scale *= 0.1;
+			devc->scale += -1;
 		else if (devc->mq == SR_MQ_CURRENT) /* 000.0 µA */
-			devc->scale *= 0.00001;
+			devc->scale += -5;
 		else if (devc->mq == SR_MQ_RESISTANCE) {
 			if (devc->buflen >= 10) {
 				/* °C with 10 byte msg type, otherwise GOhm. */
 				devc->mq = SR_MQ_TEMPERATURE;
 				devc->unit = SR_UNIT_CELSIUS;
-				devc->scale *= 0.01;
+				devc->scale += -2;
 			} else if (devc->scale1000 == 2) {
 				/* 16I Iso 500/1000V 3 GOhm */
-				devc->scale *= 0.1;
+				devc->scale += -1;
 			}
 		}
 		break;
 	case 1:
-		devc->scale *= 0.0001;
+		devc->scale += -4;
 		break;
 	case 2:
-		devc->scale *= 0.001;
+		devc->scale += -3;
 		break;
 	case 3:
-		devc->scale *= 0.01;
+		devc->scale += -2;
 		break;
 	}
 }
@@ -267,14 +263,14 @@ static void decode_rs_18(uint8_t rs, struct dev_context *devc)
 	/* Sign */
 	if (((devc->scale > 0) && (rs & 0x08)) ||
 			((devc->scale < 0) && !(rs & 0x08)))
-		devc->scale *= -1.0;
+		devc->scale = -devc->scale;
 
 	/* Range */
 	range = rs & 0x07;
 	switch (devc->mq) {
 	case SR_MQ_VOLTAGE:
 		if (devc->unit == SR_UNIT_DECIBEL_VOLT) {
-			devc->scale *= pow(10.0, -2);
+			devc->scale += -2;
 			/*
 			 * When entering relative mode, the device switches
 			 * from 10 byte to 6 byte msg format. Unfortunately
@@ -284,25 +280,22 @@ static void decode_rs_18(uint8_t rs, struct dev_context *devc)
 			 */
 		}
 		else
-			devc->scale *= pow(10.0, range - 5);
+			devc->scale += range - 5;
 		break;
 	case SR_MQ_CURRENT:
-		if (devc->scale1000 == -1)
-			devc->scale *= pow(10.0, range - 5);
-		else
-			devc->scale *= pow(10.0, range - 4);
+		devc->scale += (devc->scale1000 == -1) ? range - 5 : range - 4;
 		break;
 	case SR_MQ_RESISTANCE:
-		devc->scale *= pow(10.0, range - 2);
+		devc->scale += range - 2;
 		break;
 	case SR_MQ_FREQUENCY:
-		devc->scale *= pow(10.0, range - 2);
+		devc->scale += range - 2;
 		break;
 	case SR_MQ_TEMPERATURE:
-		devc->scale *= pow(10.0, range - 2);
+		devc->scale += range - 2;
 		break;
 	case SR_MQ_CAPACITANCE:
-		devc->scale *= pow(10.0, range - 13);
+		devc->scale += range - 13;
 		break;
 		/* TODO: 29S Mains measurements. */
 	default:
@@ -394,7 +387,7 @@ static void decode_ctmv_2x(uint8_t ctmv, struct dev_context *devc)
 	case 0x09: /* 01001 F */
 		devc->mq = SR_MQ_CAPACITANCE;
 		devc->unit = SR_UNIT_FARAD;
-		devc->scale *= 0.1;
+		devc->scale += -1;
 		break;
 	case 0x0a: /* 01010 V dB */
 		devc->mq = SR_MQ_VOLTAGE;
@@ -412,10 +405,10 @@ static void decode_ctmv_2x(uint8_t ctmv, struct dev_context *devc)
 			devc->mqflags |= SR_MQFLAG_DC;
 		break;
 	case 0x0d: /* 01101 W on power, mA range (29S only) */
-		devc->scale *= 0.1;
+		devc->scale += -1;
 		/* Fall through! */
 	case 0x0e: /* 01110 W on power, A range (29S only) */
-		devc->scale *= 0.1;
+		devc->scale += -1;
 		devc->scale1000 = -1;
 		devc->mq = SR_MQ_POWER;
 		devc->unit = SR_UNIT_WATT;
@@ -429,7 +422,7 @@ static void decode_ctmv_2x(uint8_t ctmv, struct dev_context *devc)
 			devc->mqflags |= SR_MQFLAG_DIODE;
 		} else {
 			devc->mq = SR_MQ_CONTINUITY;
-			devc->scale *= 0.00001;
+			devc->scale += -5;
 		}
 		devc->unit = SR_UNIT_VOLT;
 		break;
@@ -521,37 +514,34 @@ static void decode_rs_2x(uint8_t rs, struct dev_context *devc)
 	/* Sign */
 	if (((devc->scale > 0) && (rs & 0x08)) ||
 			((devc->scale < 0) && !(rs & 0x08)))
-		devc->scale *= -1.0;
+		devc->scale = -devc->scale;
 
 	/* Range */
 	range = rs & 0x07;
 	switch (devc->mq) {
 	case SR_MQ_VOLTAGE:
-		if (devc->unit == SR_UNIT_DECIBEL_VOLT)
-			devc->scale *= pow(10.0, -3);
-		else
-			devc->scale *= pow(10.0, range - 6);
+		devc->scale += (devc->unit == SR_UNIT_DECIBEL_VOLT) ? -3 : range - 6;
 		break;
 	case SR_MQ_CURRENT:
 		if (devc->scale1000 != -1) /* uA, mA */
 			range += 1;/* mA and A ranges differ by 10^4, not 10^3!*/
-		devc->scale *= pow(10.0, range - 6);
+		devc->scale += range - 6;
 		break;
 	case SR_MQ_RESISTANCE:
-		devc->scale *= pow(10.0, range - 3);
+		devc->scale += range - 3;
 		break;
 	case SR_MQ_FREQUENCY:
-		devc->scale *= pow(10.0, range - 3);
+		devc->scale += range - 3;
 		break;
 	case SR_MQ_TEMPERATURE:
 		if (range == 4) /* Indicator for °F */
 			devc->unit = SR_UNIT_FAHRENHEIT;
-		devc->scale *= pow(10.0, - 2);
+		devc->scale += -2;
 		break;
 	case SR_MQ_CAPACITANCE:
 		if (range == 7)
 			range -= 1; /* Same value as range 6 */
-		devc->scale *= pow(10.0, range - 13);
+		devc->scale += range - 13;
 		break;
 	/* TODO: 29S Mains measurements. */
 	default:
@@ -577,29 +567,29 @@ static void decode_rs_2x_TR2(uint8_t rs, struct dev_context *devc)
 			switch (range) {
 			case 0:
 			case 1:	/* 100, 300 µA */
-				devc->scale *= pow(10.0, -6);
+				devc->scale += -6;
 				break;
 			case 2:
 			case 3:	/* 1, 3 mA */
-				devc->scale *= pow(10.0, -5);
+				devc->scale += -5;
 				break;
 			case 4:
 			case 5:	/* 10, 30 mA */
-				devc->scale *= pow(10.0, -4);
+				devc->scale += -4;
 				break;
 			case 6:
 			case 7:	/* 100, 300 mA */
-				devc->scale *= pow(10.0, -3);
+				devc->scale += -3;
 				break;
 			}
 		else /* A */
 			switch (range) {
 			case 0:
 			case 1:	/* 1, 3 A */
-				devc->scale *= pow(10.0, -5);
+				devc->scale += -5;
 				break;
 			case 2: /* 10 A */
-				devc->scale *= pow(10.0, -4);
+				devc->scale += -4;
 				break;
 			}
 		break;
@@ -611,7 +601,7 @@ static void decode_rs_2x_TR2(uint8_t rs, struct dev_context *devc)
 	/* Sign */
 	if (((devc->scale > 0) && (rs & 0x08)) ||
 			((devc->scale < 0) && !(rs & 0x08)))
-		devc->scale *= -1.0;
+		devc->scale = -devc->scale;
 }
 
 /**
@@ -641,7 +631,7 @@ static void decode_spc_2x(uint8_t spc, struct dev_context *devc)
 static void clean_rs_v(struct dev_context *devc)
 {
 	devc->value = 0.0;
-	devc->scale = 1.0;
+	devc->scale = 0;
 }
 
 /** Clean current type, measured variable, range and sign. */
@@ -663,10 +653,12 @@ static void send_value(struct sr_dev_inst *sdi)
 	struct sr_analog_meaning meaning;
 	struct sr_analog_spec spec;
 	struct sr_datafeed_packet packet;
+	int digits;
 
 	devc = sdi->priv;
 
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	digits = -(devc->scale + 3 * devc->scale1000);
+	sr_analog_init(&analog, &encoding, &meaning, &spec, digits);
 	analog.meaning->channels = sdi->channels;
 	analog.num_samples = 1;
 	analog.meaning->mq = devc->mq;
@@ -699,7 +691,7 @@ static void process_msg_dta_6(struct sr_dev_inst *sdi)
 		decode_rs_18(bc(devc->buf[0]), devc);
 	else {
 		decode_rs_2x(bc(devc->buf[0]), devc);
-		devc->scale *= 10; /* Compensate for format having only 5 digits, decode_rs_2x() assumes 6. */
+		devc->scale += 1; /* Compensate for format having only 5 digits, decode_rs_2x() assumes 6. */
 	}
 
 	/* Bytes 1-5, digits (ls first). */
@@ -708,16 +700,16 @@ static void process_msg_dta_6(struct sr_dev_inst *sdi)
 		if (dgt >= 10) {
 			/* 10 Overload; on model <= 16X also 11 possible. */
 			devc->value = NAN;
-			devc->scale = 1.0;
+			devc->scale = 0;
 			break;
 		}
 		devc->value += pow(10.0, cnt) * dgt;
 	}
 
-	sr_spew("process_msg_dta_6() value=%f scale=%f scale1000=%d",
+	sr_spew("process_msg_dta_6() value=%f scale=%d scale1000=%d",
 		devc->value, devc->scale, devc->scale1000);
 	if (devc->value != NAN)
-		devc->value *= devc->scale * pow(1000.0, devc->scale1000);
+		devc->value *= pow(10.0, devc->scale) * pow(1000.0, devc->scale1000);
 
 	/* Create and send packet. */
 	send_value(sdi);
@@ -775,16 +767,16 @@ static void process_msg_inf_10(struct sr_dev_inst *sdi)
 		}
 		else if (dgt >= 12) { /* Overload */
 			devc->value = NAN;
-			devc->scale = 1.0;
+			devc->scale = 0;
 			break;
 		}
 		devc->value += pow(10.0, cnt) * dgt;
 	}
-	sr_spew("process_msg_inf_10() value=%f scale=%f scalet=%d",
-		devc->value, devc->scale,  devc->scale1000);
+	sr_spew("process_msg_inf_10() value=%f scale=%d scalet=%d",
+		devc->value, devc->scale, devc->scale1000);
 
 	if (devc->value != NAN)
-		devc->value *= devc->scale * pow(1000.0, devc->scale1000);
+		devc->value *= pow(10, devc->scale) * pow(1000.0, devc->scale1000);
 
 	/* Create and send packet. */
 	send_value(sdi);
@@ -860,16 +852,16 @@ static void process_msg_inf_13(struct sr_dev_inst *sdi)
 		dgt = bc(devc->buf[5 + cnt]);
 		if (dgt == 10) { /* Overload */
 			devc->value = NAN;
-			devc->scale = 1.0;
+			devc->scale = 0;
 			break;
 		}
 		devc->value += pow(10.0, cnt) * dgt;
 	}
-	sr_spew("process_msg_inf_13() value=%f scale=%f scale1000=%d mq=%d "
+	sr_spew("process_msg_inf_13() value=%f scale=%d scale1000=%d mq=%d "
 		"unit=%d mqflags=0x%02" PRIx64, devc->value, devc->scale,
 		devc->scale1000, devc->mq, devc->unit, (uint64_t)devc->mqflags);
 	if (devc->value != NAN)
-		devc->value *= devc->scale * pow(1000.0, devc->scale1000);
+		devc->value *= pow(10, devc->scale) * pow(1000.0, devc->scale1000);
 
 	/* Byte 12, Send Interval */
 	sr_spew("Send interval: %s", decode_send_interval(bc(devc->buf[12])));
@@ -878,9 +870,11 @@ static void process_msg_inf_13(struct sr_dev_inst *sdi)
 	send_value(sdi);
 }
 
-/** Dump contents of 14-byte message.
- *  @param buf Pointer to array of 14 data bytes.
- *  @param[in] raw Write only data bytes, no interpretation.
+/**
+ * Dump contents of 14-byte message.
+ *
+ * @param buf Pointer to array of 14 data bytes.
+ * @param[in] raw Write only data bytes, no interpretation.
  */
 static void dump_msg14(guchar *buf, gboolean raw)
 {
@@ -901,10 +895,11 @@ static void dump_msg14(guchar *buf, gboolean raw)
 				buf[12], buf[13]);
 }
 
-/** Calc checksum for 14 byte message type.
+/**
+ * Calc checksum for 14 byte message type.
  *
- *  @param[in] dta Pointer to array of 13 data bytes.
- *  @return Checksum.
+ * @param[in] dta Pointer to array of 13 data bytes.
+ * @return Checksum.
  */
 static guchar calc_chksum_14(guchar *dta)
 {
@@ -922,7 +917,7 @@ static int chk_msg14(struct sr_dev_inst *sdi)
 	struct dev_context *devc;
 	int retc;
 	gboolean isreq; /* Message is request to multimeter (otherwise response) */
-	uint8_t addr;  /* Adaptor address */
+	uint8_t addr; /* Adaptor address */
 
 	retc = SR_OK;
 
@@ -1022,7 +1017,7 @@ SR_PRIV int process_msg14(struct sr_dev_inst *sdi)
 			sr_spew("Measurement Function: %d ", (int)devc->buf[7]);
 			decode_ctmv_2x(devc->buf[7], devc);
 			sr_spew("Range: 0x%x", devc->buf[8]);
-			decode_rs_2x_TR2(devc->buf[8] & 0x0f, devc);  /* Docs wrong, uses conversion table TR_2! */
+			decode_rs_2x_TR2(devc->buf[8] & 0x0f, devc); /* Docs wrong, uses conversion table TR_2! */
 			devc->autorng = (devc->buf[8] & 0x20) == 0;
 			// TODO 9, 10: 29S special functions
 			devc->ubatt = 0.1 * (float)devc->buf[11];
@@ -1033,7 +1028,7 @@ SR_PRIV int process_msg14(struct sr_dev_inst *sdi)
 			sr_spew("Internal version %d.%d", (int)devc->buf[5], (int)devc->buf[4]);
 			sr_spew("Comm mode: 0x%x", (int)devc->buf[6]);
 			sr_spew("Block cnt%%64: %d", (int)devc->buf[7]);
-			sr_spew("drpCi: %d  drpCh: %d", (int)devc->buf[8], (int)devc->buf[9]);
+			sr_spew("drpCi: %d drpCh: %d", (int)devc->buf[8], (int)devc->buf[9]);
 			// Semantics undocumented. Possibly Metrahit 29S dropouts stuff?
 			break;
 		default:
@@ -1067,7 +1062,7 @@ SR_PRIV int process_msg14(struct sr_dev_inst *sdi)
 			dgt = bc(devc->buf[7 + cnt]);
 			if (dgt == 10) { /* Overload */
 				devc->value = NAN;
-				devc->scale = 1.0;
+				devc->scale = 0;
 				break;
 			}
 			else if (dgt == 13) { /* FUSE */
@@ -1076,16 +1071,16 @@ SR_PRIV int process_msg14(struct sr_dev_inst *sdi)
 			else if (dgt == 14) { /* Function recognition mode, OPEN */
 				sr_info("Function recognition mode, OPEN!");
 				devc->value = NAN;
-				devc->scale = 1.0;
+				devc->scale = 0;
 				break;
 			}
 			devc->value += pow(10.0, cnt) * dgt;
 		}
-		sr_spew("process_msg14() value=%f scale=%f scale1000=%d mq=%d "
+		sr_spew("process_msg14() value=%f scale=%d scale1000=%d mq=%d "
 			"unit=%d mqflags=0x%02" PRIx64, devc->value, devc->scale,
 			devc->scale1000, devc->mq, devc->unit, (uint64_t)devc->mqflags);
 		if (devc->value != NAN)
-			devc->value *= devc->scale * pow(1000.0, devc->scale1000);
+			devc->value *= pow(10, devc->scale) * pow(1000.0, devc->scale1000);
 
 		send_value(sdi);
 
@@ -1246,13 +1241,15 @@ SR_PRIV int gmc_mh_2x_receive_data(int fd, int revents, void *cb_data)
 	return TRUE;
 }
 
-/** Create 14 (42) byte command for Metrahit 2x multimeter in bidir mode.
+/**
+ * Create 14 (42) byte command for Metrahit 2x multimeter in bidir mode.
  *
- *  Actually creates 42 bytes due to the encoding method used.
- *  @param[in] addr Device address (0=adapter, 1..15 multimeter; for byte 0).
- *  @param[in] func Function code (byte 3).
- *  @param[in] params Further parameters (9 bytes)
- *  @param[out] buf Buffer to create msg in (42 bytes).
+ * Actually creates 42 bytes due to the encoding method used.
+ *
+ * @param[in] addr Device address (0=adapter, 1..15 multimeter; for byte 0).
+ * @param[in] func Function code (byte 3).
+ * @param[in] params Further parameters (9 bytes)
+ * @param[out] buf Buffer to create msg in (42 bytes).
  */
 static void create_cmd_14(guchar addr, guchar func, guchar *params, guchar *buf)
 {
@@ -1314,8 +1311,11 @@ int req_meas14(const struct sr_dev_inst *sdi)
 	return SR_OK;
 }
 
-/** Request status from 2x multimeter (msg 3).
- *  @param[in] power_on Try to power on powered off multimeter by sending additional messages.
+/**
+ * Request status from 2x multimeter (msg 3).
+ *
+ * @param[in] power_on Try to power on powered off multimeter by sending
+ *                     additional messages.
  */
 int req_stat14(const struct sr_dev_inst *sdi, gboolean power_on)
 {
@@ -1410,20 +1410,18 @@ SR_PRIV int gmc_decode_model_sm(uint8_t mcode)
 	}
 }
 
-/** Convert GMC model code in bidirectional mode to sigrok-internal one.
+/**
+ * Convert GMC model code in bidirectional mode to sigrok-internal one.
  *
- *  @param[in] mcode Model code.
+ * @param[in] mcode Model code.
  *
- *  @return Model code.
+ * @return Model code.
  */
 SR_PRIV int gmc_decode_model_bd(uint8_t mcode)
 {
 	switch (mcode & 0x1f) {
 	case 2:
-		if (mcode & 0x20)
-			return METRAHIT_22M;
-		else
-			return METRAHIT_22S;
+		return (mcode & 0x20) ? METRAHIT_22M : METRAHIT_22S;
 	case 3:
 		return METRAHIT_23S;
 	case 4:
@@ -1431,10 +1429,7 @@ SR_PRIV int gmc_decode_model_bd(uint8_t mcode)
 	case 5:
 		return METRAHIT_25S;
 	case 1:
-		if (mcode & 0x20)
-			return METRAHIT_26M;
-		else
-			return METRAHIT_26S;
+		return (mcode & 0x20) ? METRAHIT_26M : METRAHIT_26S;
 	case 12:
 		return METRAHIT_28S;
 	case 14:
@@ -1445,11 +1440,12 @@ SR_PRIV int gmc_decode_model_bd(uint8_t mcode)
 	}
 }
 
-/** Convert sigrok-internal model code to string.
+/**
+ * Convert sigrok-internal model code to string.
  *
- *  @param[in] mcode Model code.
+ * @param[in] mcode Model code.
  *
- *  @return Model code string.
+ * @return Model code string.
  */
 SR_PRIV const char *gmc_model_str(enum model mcode)
 {

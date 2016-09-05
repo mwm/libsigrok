@@ -134,7 +134,7 @@ static void process_mset(const struct sr_dev_inst *sdi)
 				break;
 			}
 		}
-		sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+		sr_analog_init(&analog, &encoding, &meaning, &spec, 1);
 		analog.meaning->mq = SR_MQ_SOUND_PRESSURE_LEVEL;
 		analog.meaning->mqflags = devc->cur_mqflags;
 		analog.meaning->unit = SR_UNIT_DECIBEL_SPL;
@@ -195,7 +195,7 @@ static void send_data(const struct sr_dev_inst *sdi, unsigned char *data,
 		fbuf[i] += ((data[i * 2 + 1] & 0xf0) >> 4);
 		fbuf[i] += (data[i * 2 + 1] & 0x0f) / 10.0;
 	}
-	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+	sr_analog_init(&analog, &encoding, &meaning, &spec, 1);
 	analog.meaning->mq = SR_MQ_SOUND_PRESSURE_LEVEL;
 	analog.meaning->mqflags = devc->cur_mqflags;
 	analog.meaning->unit = SR_UNIT_DECIBEL_SPL;
@@ -770,11 +770,11 @@ SR_PRIV int cem_dt_885x_meas_range_set(const struct sr_dev_inst *sdi,
 	devc = sdi->priv;
 	if (low == 30 && high == 130)
 		token = TOKEN_MEAS_RANGE_30_130;
-	else if (low == 30 &&  high == 80)
+	else if (low == 30 && high == 80)
 		token = TOKEN_MEAS_RANGE_30_80;
-	else if (low == 50 &&  high == 100)
+	else if (low == 50 && high == 100)
 		token = TOKEN_MEAS_RANGE_50_100;
-	else if (low == 80 &&  high == 130)
+	else if (low == 80 && high == 130)
 		token = TOKEN_MEAS_RANGE_80_130;
 	else
 		return SR_ERR;

@@ -18,9 +18,12 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-/** @file
- *  <em>Motech LPS-30x series</em> power supply driver
- *  @internal
+/**
+ * @file
+ *
+ * <em>Motech LPS-30x series</em> power supply driver
+ *
+ * @internal
  */
 
 #include <config.h>
@@ -44,6 +47,7 @@ static void send_data(struct sr_dev_inst *sdi)
 	packet.type = SR_DF_ANALOG;
 	packet.payload = &analog;
 
+	/* Note: digits/spec_digits will be overridden later. */
 	sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
 
 	analog.meaning->channels = sdi->channels;

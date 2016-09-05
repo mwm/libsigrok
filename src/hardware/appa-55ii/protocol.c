@@ -23,11 +23,11 @@
 #include "protocol.h"
 
 typedef enum {
-    LIVE_DATA    = 0x00,
-    LOG_METADATA = 0x11,
-    LOG_DATA     = 0x14,
-    LOG_START    = 0x18,
-    LOG_END      = 0x19,
+	LIVE_DATA    = 0x00,
+	LOG_METADATA = 0x11,
+	LOG_DATA     = 0x14,
+	LOG_START    = 0x18,
+	LOG_END      = 0x19,
 } packet_type;
 
 static gboolean appa_55ii_checksum(const uint8_t *buf)
@@ -163,7 +163,7 @@ static void appa_55ii_log_data_parse(struct sr_dev_inst *sdi)
 		/* FIXME: Timestamp should be sent in the packet. */
 		sr_dbg("Timestamp: %02d:%02d:%02d", buf[2], buf[3], buf[4]);
 
-		sr_analog_init(&analog, &encoding, &meaning, &spec, 0);
+		sr_analog_init(&analog, &encoding, &meaning, &spec, 1);
 		analog.num_samples = 1;
 		analog.meaning->mq = SR_MQ_TEMPERATURE;
 		analog.meaning->unit = SR_UNIT_CELSIUS;
