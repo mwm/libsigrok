@@ -197,9 +197,8 @@ static int init(struct sr_output *o, GHashTable *options)
 			} else {
 				sr_warn("Unknown channel type %d.", ch->type);
 			}
-			ctx->channels[i].label = 
-				(ctx->label_do && ctx->label_names)
-				? ch->name : NULL;
+                        if (ctx->label_do && ctx->label_names)
+                                ctx->channels[i].label = ch->name ;
 			ctx->channels[i++].ch = ch;
 		}
 	}
