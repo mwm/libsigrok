@@ -309,20 +309,10 @@ static void process_analog(struct context *ctx,
 			   const struct sr_datafeed_analog *analog)
 {
 	int ret;
-	unsigned int i, j, c, num_channels;
+	unsigned int i, j, c, ch, num_channels;
 	struct sr_analog_meaning *meaning;
 	GSList *l;
 	float *fdata = NULL;
-
-	if (!ctx->analog_samples) {
-		ctx->analog_samples = g_malloc(analog->num_samples
-			* sizeof(float) * ctx->num_analog_channels);
-		if (!ctx->num_samples)
-			ctx->num_samples = analog->num_samples;
-	}
-	if (ctx->num_samples != analog->num_samples)
-		sr_warn("Expecting %u analog samples, got %u.",
-			ctx->num_samples, analog->num_samples);
 
 	meaning = analog->meaning;
 	num_channels = g_slist_length(meaning->channels);
@@ -332,23 +322,35 @@ static void process_analog(struct context *ctx,
 	if ((ret = sr_analog_to_float(analog, fdata)) != SR_OK)
 		sr_warn("Problems converting data to floating point values.");
 
-	for (i = 0; i < ctx->num_analog_channels + ctx->num_logic_channels; i++) {
-		if (ctx->channels[i].ch->type == SR_CHANNEL_ANALOG) {
-			sr_dbg("Looking for channel %s",
-			       ctx->channels[i].ch->name);
+	if (!ctx->analog_samples) {
+		ctx->analog_samples = g_malloc(sizeof(float) * analog->num_samples
+                                               * ctx->num_analog_channels);
+		if (!ctx->num_samples)
+			ctx->num_samples = analog->num_samples;
+	}
+	if (ctx->num_samples != analog->num_samples)
+		sr_warn("Expecting %u analog samples, got %u.",
+			ctx->num_samples, analog->num_samples);
+
+	for (j = ch = 0; ch < ctx->num_analog_channels; j++) {
+		if (ctx->channels[j].ch->type == SR_CHANNEL_ANALOG) {
+			sr_dbg("Looking for channel %s", 
+				ctx->channels[j].ch->name);
 			for (l = meaning->channels, c = 0; l; l = l->next, c++) {
-				struct sr_channel *ch = l->data;
-				sr_dbg("Checking %s", ch->name);
-				if (ctx->channels[i].ch == l->data) {
+				sr_dbg("Checking %s",
+					((struct sr_channel *) l->data)->name);
+				if (ctx->channels[j].ch == l->data) {
 					if (ctx->label_do && !ctx->label_names) {
-						sr_analog_unit_to_string(analog,
-							&ctx->channels[i].label);
+						sr_analog_unit_to_string(
+							analog,
+							&ctx->channels[j].label);
 					}
-					for (j = 0; j < analog->num_samples; j++)
-						ctx->analog_samples[j * ctx->num_analog_channels + i] = fdata[j * num_channels + c];
+					for (i = 0; i < analog->num_samples; i++)
+ 						ctx->analog_samples[i * ctx->num_analog_channels + ch] = fdata[i * num_channels + c];
 					break;
 				}
 			}
+			ch++;
 		}
 	}
 	g_free(fdata);
@@ -393,7 +395,7 @@ static void process_logic(struct context *ctx,
 
 static void dump_saved_values(struct context *ctx, GString **out)
 {
-	unsigned int i, j, analog_size, num_channels;
+	unsigned int i, ch, analog_size, num_channels;
 	float *analog_sample, value;
 	uint8_t *logic_sample;
 
@@ -436,12 +438,12 @@ static void dump_saved_values(struct context *ctx, GString **out)
 
 		for (i = 0; i < ctx->num_samples; i++) {
 			ctx->sample_time += ctx->period;
-			analog_sample =
-			    &ctx->analog_samples[i * ctx->num_analog_channels];
-			logic_sample =
-			    &ctx->logic_samples[i * ctx->num_logic_channels];
-
 			if (ctx->dedup) {
+                                analog_sample = &ctx->analog_samples[
+                                        i * ctx->num_analog_channels];
+                                logic_sample = &ctx->logic_samples[
+                                        i * ctx->num_logic_channels];
+
 				if (i > 0 && i < ctx->num_samples - 1 &&
 				    !memcmp(logic_sample, ctx->previous_sample,
 					    ctx->num_logic_channels) &&
@@ -461,21 +463,21 @@ static void dump_saved_values(struct context *ctx, GString **out)
 				g_string_append_printf(*out, "%lu%s",
 					ctx->sample_time, ctx->value);
 
-			for (j = 0; j < num_channels; j++) {
-				if (ctx->channels[j].ch->type == SR_CHANNEL_ANALOG) {
-					value = ctx->analog_samples[i * ctx->num_analog_channels + j];
-					ctx->channels[j].max =
-					    fmax(value, ctx->channels[j].max);
-					ctx->channels[j].min =
-					    fmin(value, ctx->channels[j].min);
+			for (ch = 0; ch < num_channels; ch++) {
+				if (ctx->channels[ch].ch->type == SR_CHANNEL_ANALOG) {
+					value = ctx->analog_samples[i * ctx->num_analog_channels + ch];
+					ctx->channels[ch].max =
+					    fmax(value, ctx->channels[ch].max);
+					ctx->channels[ch].min =
+					    fmin(value, ctx->channels[ch].min);
 					g_string_append_printf(*out, "%g%s",
 						value, ctx->value);
-				} else if (ctx->channels[j].ch->type == SR_CHANNEL_LOGIC) {
+				} else if (ctx->channels[ch].ch->type == SR_CHANNEL_LOGIC) {
 					g_string_append_printf(*out, "%c%s",
-							       ctx->logic_samples[i * ctx->num_logic_channels + j] ? '1' : '0', ctx->value);
+							       ctx->logic_samples[i * ctx->num_logic_channels + ch] ? '1' : '0', ctx->value);
 				} else {
 					sr_warn("Unexpected channel type: %d",
-						ctx->channels[i].ch->type);
+						ctx->channels[ch].ch->type);
 				}
 			}
 
