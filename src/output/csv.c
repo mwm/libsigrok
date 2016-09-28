@@ -44,7 +44,6 @@
  * label:   What to use for channel labels as the first line of output.
  *          Values are "channel", "units", "off". Defaults to "units".
  *
- *
  * time:    Whether or not the first column should include the time the sample
  *          was taken. Defaults to TRUE.
  *
@@ -67,7 +66,7 @@
 
 struct ctx_channel {
 	struct sr_channel *ch;
-        char *label;
+	char *label;
 	float min, max;
 };
 
@@ -140,7 +139,7 @@ static int init(struct sr_output *o, GHashTable *options)
 	ctx->time = g_variant_get_boolean(g_hash_table_lookup(options, "time"));
 	ctx->do_trigger = g_variant_get_boolean(g_hash_table_lookup(options, "trigger"));
 	label_string = g_variant_get_string(
-                g_hash_table_lookup(options, "label"), NULL);
+		g_hash_table_lookup(options, "label"), NULL);
 	ctx->dedup = g_variant_get_boolean(g_hash_table_lookup(options, "dedup"));
 	ctx->dedup &= ctx->time;
 
@@ -150,8 +149,8 @@ static int init(struct sr_output *o, GHashTable *options)
 	if (*ctx->gnuplot && strlen(ctx->value) > 1)
 		sr_warn("gnuplot doesn't support multichar value separators.");
 
-        if ((ctx->label_did = ctx->label_do = g_strcmp0(label_string, "off") != 0))
-                ctx->label_names = g_strcmp0(label_string, "units") != 0;
+	if ((ctx->label_did = ctx->label_do = g_strcmp0(label_string, "off") != 0))
+		ctx->label_names = g_strcmp0(label_string, "units") != 0;
 
 	sr_dbg("gnuplot = '%s', scale = %d", ctx->gnuplot, ctx->scale);
 	sr_dbg("value = '%s', record = '%s', frame = '%s', comment = '%s'",
@@ -197,8 +196,8 @@ static int init(struct sr_output *o, GHashTable *options)
 			} else {
 				sr_warn("Unknown channel type %d.", ch->type);
 			}
-                        if (ctx->label_do && ctx->label_names)
-                                ctx->channels[i].label = ch->name ;
+			if (ctx->label_do && ctx->label_names)
+				ctx->channels[i].label = ch->name;
 			ctx->channels[i++].ch = ch;
 		}
 	}
@@ -341,11 +340,10 @@ static void process_analog(struct context *ctx,
 				struct sr_channel *ch = l->data;
 				sr_dbg("Checking %s", ch->name);
 				if (ctx->channels[i].ch == l->data) {
-                                        if (ctx->label_do && !ctx->label_names) {
-                                                sr_analog_unit_to_string(
-                                                        analog,
-                                                        &ctx->channels[i].label);
-                                        }
+					if (ctx->label_do && !ctx->label_names) {
+						sr_analog_unit_to_string(analog,
+							&ctx->channels[i].label);
+					}
 					for (j = 0; j < analog->num_samples; j++)
 						ctx->analog_samples[j * ctx->num_analog_channels + i] = fdata[j * num_channels + c];
 					break;
@@ -384,8 +382,8 @@ static void process_logic(struct context *ctx,
 			for (i = 0; i <= logic->length - logic->unitsize; i += logic->unitsize) {
 				sample = logic->data + i;
 				idx = ctx->channels[ch].ch->index;
-                                if (ctx->label_do && !ctx->label_names)
-                                        ctx->channels[i].label = "logic";
+				if (ctx->label_do && !ctx->label_names)
+					ctx->channels[i].label = "logic";
 				ctx->logic_samples[i * ctx->num_logic_channels + ch] = sample[idx / 8] & (1 << (idx % 8));
 			}
 			ch++;
@@ -412,16 +410,16 @@ static void dump_saved_values(struct context *ctx, GString **out)
 
 		if (ctx->label_do) {
 			if (ctx->time)
-				g_string_append_printf(*out, "%s%s", 
-                                        ctx->label_names ? "Time" : ctx->xlabel,
-                                        ctx->value);
+				g_string_append_printf(*out, "%s%s",
+					ctx->label_names ? "Time" :
+					ctx->xlabel, ctx->value);
 			for (i = 0; i < num_channels; i++) {
-                                g_string_append_printf(*out, "%s%s",
-                                               ctx->channels[i].label, ctx->value);
-                                if (ctx->channels[i].ch->type == SR_CHANNEL_ANALOG
-                                    && ctx->label_names)
-                                        g_free(ctx->channels[i].label);
-                                }
+				g_string_append_printf(*out, "%s%s",
+					ctx->channels[i].label, ctx->value);
+				if (ctx->channels[i].ch->type == SR_CHANNEL_ANALOG
+						&& ctx->label_names)
+					g_free(ctx->channels[i].label);
+			}
 			if (ctx->do_trigger)
 				g_string_append_printf(*out, "Trigger%s",
 						       ctx->value);

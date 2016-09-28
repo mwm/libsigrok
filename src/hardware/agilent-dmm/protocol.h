@@ -17,52 +17,72 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#ifndef LIBSIGROK_HARDWARE_FLUKE_DMM_FLUKE_DMM_H
-#define LIBSIGROK_HARDWARE_FLUKE_DMM_FLUKE_DMM_H
+#ifndef LIBSIGROK_HARDWARE_AGILENT_DMM_PROTOCOL_H
+#define LIBSIGROK_HARDWARE_AGILENT_DMM_PROTOCOL_H
 
-#define LOG_PREFIX "fluke-dmm"
+#define LOG_PREFIX "agilent-dmm"
 
-#define FLUKEDMM_BUFSIZE 256
+#define AGDMM_BUFSIZE 256
 
 /* Always USB-serial, 1ms is plenty. */
 #define SERIAL_WRITE_TIMEOUT_MS 1
 
 /* Supported models */
 enum {
-	FLUKE_187 = 1,
-	FLUKE_189,
-	FLUKE_287,
-	FLUKE_190,
-	FLUKE_289,
+	AGILENT_U1231 = 1,
+	AGILENT_U1232,
+	AGILENT_U1233,
+
+	AGILENT_U1241,
+	AGILENT_U1242,
+
+	AGILENT_U1251,
+	AGILENT_U1252,
+	AGILENT_U1253,
+
+	KEYSIGHT_U1281,
+	KEYSIGHT_U1282,
 };
 
 /* Supported device profiles */
-struct flukedmm_profile {
+struct agdmm_profile {
 	int model;
 	const char *modelname;
-	/* How often to poll, in ms. */
-	int poll_period;
-	/* If no response received, how long to wait before retrying. */
-	int timeout;
+	const struct agdmm_job *jobs;
+	const struct agdmm_recv *recvs;
 };
 
 /* Private, per-device-instance driver context. */
 struct dev_context {
-	const struct flukedmm_profile *profile;
+	const struct agdmm_profile *profile;
 	struct sr_sw_limits limits;
 
 	/* Runtime. */
-	char buf[FLUKEDMM_BUFSIZE];
+	int64_t jobqueue[8];
+	unsigned char buf[AGDMM_BUFSIZE];
 	int buflen;
-	int64_t cmd_sent_at;
-	int expect_response;
-	int meas_type;
-	int is_relative;
-	enum sr_mq mq;
-	enum sr_unit unit;
-	enum sr_mqflag mqflags;
+	int cur_mq;
+	int cur_unit;
+	int cur_mqflags;
+	int cur_digits;
+	int cur_encoding;
+	int cur_exponent;
+	int cur_acdc;
+	int mode_tempaux;
+	int mode_continuity;
+	int mode_squarewave;
 };
 
-SR_PRIV int fluke_receive_data(int fd, int revents, void *cb_data);
+struct agdmm_job {
+	int interval;
+	int (*send) (const struct sr_dev_inst *sdi);
+};
+
+struct agdmm_recv {
+	const char *recv_regex;
+	int (*recv) (const struct sr_dev_inst *sdi, GMatchInfo *match);
+};
+
+SR_PRIV int agdmm_receive_data(int fd, int revents, void *cb_data);
 
 #endif

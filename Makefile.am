@@ -179,9 +179,9 @@ src_libdrivers_la_SOURCES = src/drivers.c
 
 if HW_AGILENT_DMM
 src_libdrivers_la_SOURCES += \
-	src/hardware/agilent-dmm/api.c \
-	src/hardware/agilent-dmm/agilent-dmm.h \
-	src/hardware/agilent-dmm/sched.c
+	src/hardware/agilent-dmm/protocol.h \
+	src/hardware/agilent-dmm/protocol.c \
+	src/hardware/agilent-dmm/api.c
 endif
 if HW_APPA_55II
 src_libdrivers_la_SOURCES += \
@@ -267,7 +267,9 @@ src_libdrivers_la_SOURCES += \
 endif
 if HW_DEMO
 src_libdrivers_la_SOURCES += \
-	src/hardware/demo/demo.c
+	src/hardware/demo/protocol.h \
+	src/hardware/demo/protocol.c \
+	src/hardware/demo/api.c
 endif
 if HW_DEREE_DE5000
 src_libdrivers_la_SOURCES += \
@@ -275,8 +277,8 @@ src_libdrivers_la_SOURCES += \
 endif
 if HW_FLUKE_DMM
 src_libdrivers_la_SOURCES += \
-	src/hardware/fluke-dmm/fluke-dmm.h \
-	src/hardware/fluke-dmm/fluke.c \
+	src/hardware/fluke-dmm/protocol.h \
+	src/hardware/fluke-dmm/protocol.c \
 	src/hardware/fluke-dmm/api.c
 endif
 if HW_FTDI_LA
@@ -319,8 +321,8 @@ src_libdrivers_la_SOURCES += \
 endif
 if HW_HANTEK_DSO
 src_libdrivers_la_SOURCES += \
-	src/hardware/hantek-dso/dso.h \
-	src/hardware/hantek-dso/dso.c \
+	src/hardware/hantek-dso/protocol.h \
+	src/hardware/hantek-dso/protocol.c \
 	src/hardware/hantek-dso/api.c
 endif
 if HW_HP_3457A
